@@ -2,6 +2,7 @@
 // Auth por cookie de sesión (MARKETSNACK_COOKIE en .env.local). Ver SCOREDCARD/Scoredcard.md.
 
 import type { RawTrade } from "./flow";
+import type { Chain2RawContract } from "./optionChain2";
 
 const BASE_URL = "https://app.marketsnack.com";
 
@@ -58,6 +59,99 @@ export async function fetchFlow(
  */
 export async function fetchMarketFlow(opts: FetchFlowOptions = {}): Promise<FlowResult> {
   return paginate(null, opts);
+}
+
+/** Un vencimiento disponible para un ticker (de /api/assets/{TICKER}/expirations). */
+export interface ExpirationEntry {
+  date: string; // "YYYY-MM-DD"
+  symbols: string[];
+}
+
+/**
+ * Lista los vencimientos disponibles de un ticker, ordenados de más cercano a más lejano.
+ * Endpoint: /api/assets/{TICKER}/expirations. Es la fuente de fechas para pedir cadenas
+ * con `fetchOptionChain2` (una llamada por fecha). Payload chico (solo fechas).
+ */
+export async function fetchExpirations(ticker: string): Promise<ExpirationEntry[]> {
+  const clean = ticker.trim().toUpperCase();
+  if (!clean) throw new MarketSnackError("Ticker vacío.");
+  const cookieHeader = cookie();
+  const url = `${BASE_URL}/api/assets/${encodeURIComponent(clean)}/expirations`;
+
+  const res = await fetch(url, {
+    headers: { Accept: "application/json", Cookie: cookieHeader },
+    cache: "no-store",
+    redirect: "manual",
+  });
+
+  if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
+    throw new MarketSnackError(
+      "Sesión de MarketSnack inválida o expirada. Actualiza MARKETSNACK_COOKIE en .env.local.",
+      res.status,
+    );
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new MarketSnackError(
+      `MarketSnack respondió ${res.status}. ${body.slice(0, 200)}`.trim(),
+      res.status,
+    );
+  }
+
+  const json: unknown = await res.json();
+  if (!Array.isArray(json)) return [];
+  return (json as ExpirationEntry[])
+    .filter((e) => e && typeof e.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(e.date))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/**
+ * Descarga la Option Chain 2.0 (extendida) de MarketSnack para UN vencimiento.
+ * Endpoint: /api/assets/{TICKER}/option_chain_extended?expiration_date=YYYY-MM-DD
+ * A diferencia del flow feed NO pagina: devuelve el array plano de contratos de esa
+ * expiración, con greeks/IV/MID reales. El shape se normaliza con `normalizeChain2`.
+ * Para varias expiraciones, llamar una vez por fecha.
+ */
+export async function fetchOptionChain2(
+  ticker: string,
+  expirationDate: string,
+): Promise<Chain2RawContract[]> {
+  const clean = ticker.trim().toUpperCase();
+  if (!clean) throw new MarketSnackError("Ticker vacío.");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(expirationDate)) {
+    throw new MarketSnackError(`expiration_date inválida: ${expirationDate}. Usa YYYY-MM-DD.`);
+  }
+  const cookieHeader = cookie();
+  const params = new URLSearchParams({ expiration_date: expirationDate });
+  const url = `${BASE_URL}/api/assets/${encodeURIComponent(clean)}/option_chain_extended?${params.toString()}`;
+
+  const res = await fetch(url, {
+    headers: { Accept: "application/json", Cookie: cookieHeader },
+    cache: "no-store",
+    redirect: "manual",
+  });
+
+  if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
+    throw new MarketSnackError(
+      "Sesión de MarketSnack inválida o expirada. Actualiza MARKETSNACK_COOKIE en .env.local.",
+      res.status,
+    );
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new MarketSnackError(
+      `MarketSnack respondió ${res.status}. ${body.slice(0, 200)}`.trim(),
+      res.status,
+    );
+  }
+
+  // El endpoint devuelve un array plano; toleramos también { list: [...] } por si acaso.
+  const json: unknown = await res.json();
+  if (Array.isArray(json)) return json as Chain2RawContract[];
+  if (json && typeof json === "object" && Array.isArray((json as { list?: unknown }).list)) {
+    return (json as { list: Chain2RawContract[] }).list;
+  }
+  return [];
 }
 
 /** Cuerpo de paginación compartido. `symbol === null` → escaneo de todo el mercado. */

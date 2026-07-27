@@ -167,7 +167,10 @@ export async function fetchCompany(ticker: string): Promise<CompanyInfo> {
     sector: d.sic_description ?? null,
     description: d.description ?? null,
     hasLogo: Boolean(d.branding?.logo_url || d.branding?.icon_url),
-    price: t.day?.c ?? t.min?.c ?? t.prevDay?.c ?? null,
+    // Con el mercado cerrado, Massive devuelve day.c = 0 (sin negociación hoy).
+    // Un precio 0 no es válido: se usa `||` para caer al último precio real
+    // (min → cierre previo). Si no, el spot quedaría en 0 y el GEX no se calcula.
+    price: t.day?.c || t.min?.c || t.prevDay?.c || null,
     change: t.todaysChange ?? null,
     changePercent: t.todaysChangePerc ?? null,
     dayOpen: t.day?.o ?? null,
@@ -184,6 +187,7 @@ interface AggBar {
   h: number;
   l: number;
   c: number;
+  v?: number; // volumen
 }
 
 function toDateStr(ms: number): string {
@@ -207,6 +211,7 @@ export async function fetchDailyBars(ticker: string, days = 365): Promise<DailyB
     high: b.h,
     low: b.l,
     close: b.c,
+    volume: b.v,
   }));
 }
 

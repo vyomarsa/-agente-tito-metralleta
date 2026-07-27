@@ -1,0 +1,272 @@
+// GET /api/spreads?bias=neutral — Escáner de Credit Spreads (weekly del frente, 3–10 DTE) por SSE.
+//
+// Orquesta I/O y NADA de criterio: todo lo que decide vive en lib/creditSpread.ts.
+// El saldo NO llega aquí: la ruta devuelve candidatos con métricas y el
+// dimensionamiento (2–3% del capital) se calcula en el cliente con tito.risk.*.
+//
+// FUENTE: MarketSnack (Option Chain 2.0) — trae delta/IV/OI/bid-ask REALES por
+// contrato, así que ya NO depende de Schwab. El mandato PROHÍBE estimar el delta y
+// MarketSnack lo da firmado (call +, put −) e IV en decimal. Sin cookie → estado
+// claro, nunca estimación silenciosa.
+
+import {
+  fetchExpirations,
+  fetchOptionChain2,
+} from "@/lib/marketsnack";
+import {
+  normalizeChain2,
+  expirationsInDteWindow,
+  dteOf,
+  type Chain2Contract,
+} from "@/lib/optionChain2";
+import { fetchCompany } from "@/lib/massive";
+import { cachedDailyBars } from "@/lib/barsStore";
+import { avg20dVolume } from "@/lib/volume";
+import { findLevels } from "@/lib/levels";
+import { earningsForTicker } from "@/lib/earnings";
+import {
+  cachedMacroCalendar,
+  macroEventsInWindow,
+  addDaysStr,
+} from "@/lib/macroCalendar";
+import {
+  creditSpreadCandidates,
+  DTE_MIN,
+  DTE_MAX,
+  type Bias,
+  type SpreadQuote,
+  type SpreadScan,
+} from "@/lib/creditSpread";
+import { SPREAD_UNIVERSE } from "@/lib/spreadUniverse";
+import type { SpreadSseEvent } from "@/app/spreads/types";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+// MarketSnack usa cookie de sesión y pagina la cadena por vencimiento: mantenemos
+// la concurrencia baja para no saturar ni provocar rotación de sesión.
+const CONCURRENCY = 4;
+
+function sse(event: SpreadSseEvent): string {
+  return `data: ${JSON.stringify(event)}\n\n`;
+}
+
+function isBias(v: string | null): v is Bias {
+  return v === "alcista" || v === "bajista" || v === "neutral";
+}
+
+/** Corre `worker` sobre `items` con como mucho `limit` en vuelo a la vez. */
+async function mapLimit<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let i = 0;
+  async function run(): Promise<void> {
+    while (i < items.length) {
+      const idx = i++;
+      out[idx] = await worker(items[idx]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+  return out;
+}
+
+/**
+ * Chain2Contract (MarketSnack) → SpreadQuote. MarketSnack ya entrega el delta
+ * FIRMADO (call +, put −) y la IV en DECIMAL, así que no hay conversión: solo se
+ * calcula el DTE de la fecha de vencimiento.
+ */
+function toSpreadQuote(c: Chain2Contract, now: Date): SpreadQuote {
+  return {
+    strike: c.strike,
+    type: c.type,
+    expiration: c.expiration,
+    dte: dteOf(c.expiration, now),
+    bid: c.bid,
+    ask: c.ask,
+    delta: c.delta, // MarketSnack ya lo da con signo (calls +, puts −)
+    iv: c.iv, // ya en decimal
+    openInterest: c.openInterest,
+    volume: c.volume,
+  };
+}
+
+/**
+ * Descarga las cadenas de la banda 3–10 DTE desde MarketSnack: una llamada de
+ * vencimientos + una de cadena por cada fecha del rango. El motor elige luego el
+ * weekly del frente (el vencimiento más cercano de la banda). Devuelve los
+ * contratos ya normalizados a SpreadQuote.
+ */
+async function fetchWindowQuotes(ticker: string, now: Date): Promise<SpreadQuote[]> {
+  const expirations = await fetchExpirations(ticker);
+  // Toda la banda [3,10]; creditSpreadCandidates se queda con el más cercano.
+  const dates = expirationsInDteWindow(expirations.map((e) => e.date), DTE_MIN, DTE_MAX, now);
+  const quotes: SpreadQuote[] = [];
+  for (const date of dates) {
+    const contracts = normalizeChain2(await fetchOptionChain2(ticker, date));
+    for (const c of contracts) quotes.push(toSpreadQuote(c, now));
+  }
+  return quotes;
+}
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const biasParam = url.searchParams.get("bias");
+  const bias: Bias = isBias(biasParam) ? biasParam : "neutral";
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+  // La vida máxima del trade para el filtro macro: hoy → hoy+7.
+  const tradeHorizonEnd = addDaysStr(today, 7);
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (e: SpreadSseEvent) => controller.enqueue(encoder.encode(sse(e)));
+      let failed = 0;
+      const scans: SpreadScan[] = [];
+
+      try {
+        // 1. Cookie de MarketSnack — requisito duro (fuente de delta/IV reales).
+        if (!process.env.MARKETSNACK_COOKIE?.trim()) {
+          send({
+            type: "error",
+            kind: "marketsnack",
+            message:
+              "Falta MARKETSNACK_COOKIE en .env.local. El escáner necesita delta e IV reales de MarketSnack y el mandato prohíbe estimarlos.",
+          });
+          return;
+        }
+
+        // 2. Calendario macro — si no hay, se BLOQUEA (no se opera a ciegas).
+        const macro = await cachedMacroCalendar(now);
+        if (!macro) {
+          send({
+            type: "error",
+            kind: "macro",
+            message:
+              "No hay calendario macro (FRED falló y no hay cache). No se opera a ciegas: reintenta más tarde.",
+          });
+          return;
+        }
+        const macroEvents = macroEventsInWindow(macro.events, today, tradeHorizonEnd);
+
+        send({
+          type: "step",
+          label: `Escaneando ${SPREAD_UNIVERSE.length} acciones · sesgo ${bias}${
+            macro.stale ? " · calendario macro en cache viejo" : ""
+          }`,
+        });
+
+        await mapLimit(SPREAD_UNIVERSE, CONCURRENCY, async (sym) => {
+          try {
+            // Cadena MarketSnack de la banda 3–10 DTE (delta/IV/OI/bid-ask reales).
+            const quotes = await fetchWindowQuotes(sym.ticker, now);
+            if (quotes.length === 0) {
+              failed++;
+              send({ type: "step", label: `${sym.ticker}: sin cadena 3–10 DTE` });
+              return;
+            }
+
+            // Spot + cap desde Massive (MarketSnack no trae precio del subyacente).
+            const company = await fetchCompany(sym.ticker).catch(() => null);
+            const spot = company?.price ?? null;
+            if (spot == null || !(spot > 0)) {
+              failed++;
+              send({ type: "step", label: `${sym.ticker}: sin precio` });
+              return;
+            }
+
+            // Volumen 20d de la acción (elegibilidad) + cierres para tendencia/IV Rank.
+            const bars = await cachedDailyBars(sym.ticker, 365, now);
+            const avgVol = avg20dVolume(bars);
+            const closes = bars.map((b) => b.close);
+
+            // Soportes/resistencias de precio (findLevels solo con barras + spot):
+            // el strike corto debe quedar del lado protegido de un nivel importante.
+            const levels = findLevels({ bars, spot, now });
+            const supports = levels.supports.map((l) => ({ price: l.price, strength: l.strength }));
+            const resistances = levels.resistances.map((l) => ({ price: l.price, strength: l.strength }));
+
+            // Earnings sobre el vencimiento más cercano de la ventana.
+            const nearExp = quotes.reduce((a, b) => (b.dte < a.dte ? b : a)).expiration;
+            const earnings = await earningsForTicker({
+              ticker: sym.ticker,
+              expiration: nearExp,
+              frontSkew: null,
+              now,
+            });
+
+            const scan = creditSpreadCandidates({
+              ticker: sym.ticker,
+              sector: sym.sector,
+              bias,
+              spot,
+              isEtf: false, // el universo es solo acciones individuales (test lo garantiza)
+              marketCap: company?.marketCap ?? null,
+              avgVolume20d: avgVol,
+              quotes,
+              closes,
+              supports,
+              resistances,
+              earnings,
+              macroEvents,
+            });
+            scans.push(scan);
+
+            const n = scan.candidates.length;
+            send({
+              type: "step",
+              label:
+                n > 0
+                  ? `${sym.ticker}: ${n} candidato${n === 1 ? "" : "s"}`
+                  : `${sym.ticker}: ${scan.reason ?? "sin candidatos"}`,
+            });
+          } catch (e) {
+            failed++;
+            const msg = e instanceof Error ? e.message : "error";
+            send({ type: "step", label: `${sym.ticker}: ${msg.slice(0, 60)}` });
+          }
+        });
+
+        // Ordena: primero los que tienen candidatos, luego por mejor margen.
+        scans.sort((a, b) => {
+          const av = a.candidates.length > 0 ? 0 : 1;
+          const bv = b.candidates.length > 0 ? 0 : 1;
+          if (av !== bv) return av - bv;
+          const am = a.candidates[0]?.stats.marginOverBreakevenPts ?? -Infinity;
+          const bm = b.candidates[0]?.stats.marginOverBreakevenPts ?? -Infinity;
+          return bm - am;
+        });
+
+        const withCandidates = scans.filter((s) => s.candidates.length > 0).length;
+        const discarded = scans.filter((s) => s.candidates.length === 0).length;
+
+        send({
+          type: "done",
+          bias,
+          scans,
+          meta: {
+            bias,
+            scanned: SPREAD_UNIVERSE.length,
+            failed,
+            withCandidates,
+            discarded,
+            degraded: failed > SPREAD_UNIVERSE.length / 2,
+            macroStale: macro.stale,
+          },
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Error inesperado en el escaneo.";
+        send({ type: "error", kind: "generic", message });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
+  });
+}

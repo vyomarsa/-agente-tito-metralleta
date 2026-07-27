@@ -83,6 +83,9 @@ export interface DailyBar {
   high: number;
   low: number;
   close: number;
+  /** Volumen del subyacente. Opcional: la gráfica no lo usa, pero el filtro de
+   *  elegibilidad de Credit Spreads (volumen promedio 20d) sí. */
+  volume?: number;
 }
 
 /** Barra con tiempo UNIX (segundos) — sirve para diario e intradía. */
