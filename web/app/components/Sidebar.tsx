@@ -14,7 +14,7 @@ const NAV: { href: string; label: string; icon: string; hint: string }[] = [
   { href: "/ideas", label: "Ideas", icon: "💡", hint: "Screener del mercado" },
   { href: "/trades", label: "Mis Trades", icon: "📓", hint: "Paper trading (simulación)" },
   { href: "/wheel", label: "Wheel", icon: "🎡", hint: "Cash-secured puts" },
-  { href: "/spreads", label: "Spreads", icon: "✂️", hint: "Credit spreads 5–7 DTE" },
+  { href: "/spreads", label: "Venta Prima", icon: "✂️", hint: "Credit spreads 4–7 DTE (venta de prima)" },
   { href: "/0dte", label: "0DTE", icon: "🎯", hint: "Cadena del día (cero DTE)" },
   { href: "/flow", label: "Time & Sales", icon: "⚡", hint: "Agresividad en vivo" },
   { href: "/schwab", label: "Schwab", icon: "🔗", hint: "Conexión del bróker" },

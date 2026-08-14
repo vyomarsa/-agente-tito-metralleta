@@ -1,56 +1,105 @@
-// Motor del escáner de Credit Spreads (weekly del frente, 3–10 DTE — el
-// vencimiento más cercano en esa banda). Traducción a código del criterio del
-// operador, afinado (jul 2026).
+// Motor del escáner de Credit Spreads — VENTA DE PRIMA (weekly del frente, 4–7 DTE
+// — el vencimiento más cercano en esa banda). Traducción a código del documento
+// del operador CREDIT SPREADS.txt (reafinado ago 2026 desde el perfil institucional
+// anterior al perfil de venta de prima que de verdad opera el dueño).
 //
 // PURO — no toca red ni disco. La ruta SSE orquesta el I/O (MarketSnack chain +
 // bars + niveles + earnings + macro) y llama aquí para DECIDIR.
 //
-// Filosofía del mandato: la función es FILTRAR y DESCARTAR. "Cero candidatos" es
-// una salida correcta y frecuente. Nunca se relaja un parámetro para producir un
-// resultado (misma regla que la salvaguarda de liquidez de Tito).
+// Filosofía de VENTA DE PRIMA (el edge NO es la alta tasa de acierto, sino vender
+// prima cara lejos del dinero y GESTIONAR activamente): la DELTA es el selector
+// principal. Se busca cobrar prima con ~85–90% de probabilidad de expirar sin valor
+// y tomar ganancias temprano. Los rieles de LIQUIDEZ y ESTRUCTURA (OI, bid-ask,
+// crédito>0, ancho, sizing) siguen siendo DUROS —son seguridad, no criterio— pero
+// los filtros de CONTEXTO (1σ estricto, soporte/resistencia guardián, tendencia,
+// macro) se degradan a AVISO en modo experto para que el dueño vea el candidato y
+// decida él (petición explícita del operador). En modo seguro (estudiantes) siguen
+// bloqueando.
 //
-// Criterio afinado (lo que pide el operador):
-//   · TENDENCIA CLARA: alcista → put credit spread · bajista → call credit spread.
-//     Se auto-detecta del precio (SMA20/50) y DEBE concordar con el sesgo elegido.
+// Criterio (doc CREDIT SPREADS.txt):
+//   · Delta corto 0.10–0.15 (objetivo ~0.12). En 4–7 DTE, 0.30 es "demasiado riesgoso".
+//   · Lado según sesgo: alcista → put credit spread · bajista → call credit spread.
+//     La tendencia del precio (SMA20/50) CONFIRMA en modo seguro; en experto avisa.
 //   · IV Rank / Percentile > 40–50 → SOLO etiqueta informativa (no descarta).
-//   · Delta corto 0.15–0.30 (banda inclusiva).
-//   · Put: el strike vendido queda POR DEBAJO de un soporte importante (filtro DURO).
-//     Call: el strike vendido queda POR ENCIMA de una resistencia importante (DURO).
+//   · Toma de ganancias al 50% del máximo; stop a 2.5× el crédito; roll por gamma.
 //   · Buena liquidez: alto volumen, OI alto, bid-ask estrecho (elegibilidad + pata).
 //
 // Diferencias críticas vs. Wheel (no copiar a ciegas):
 //   · El crédito se calcula sobre el MID, no sobre el bid con haircut.
-//   · Son DOS patas emparejadas por ancho $1–$2, no un solo strike.
+//   · Son DOS patas emparejadas por ancho adaptativo $1–$5 (el más estrecho del grid).
 //   · El delta es el REAL de MarketSnack (el prompt prohíbe estimarlo).
-//   · El strike corto debe quedar fuera de 1σ (no hay regla de crédito% por delta:
-//     el 1σ y el soporte/resistencia hacen ese trabajo).
+//   · No hay regla de crédito% por delta: la delta baja y el 1σ hacen ese trabajo.
 
 import { expectedMove } from "./expectedMove";
 import { realizedVolSeries, rankWithin } from "./ivcontext";
 import type { EarningsFlag } from "./wheel";
-import type { MacroEvent } from "./macroCalendar";
+import type { MacroEvent, MacroEventKind } from "./macroCalendar";
 
 const MULTIPLIER = 100;
 
 // ── Umbrales de elegibilidad (liquidez del subyacente/cadena) ────────────
-export const MIN_MARKET_CAP = 10_000_000_000; // $10B
-export const MIN_AVG_VOLUME_20D = 5_000_000; // 5M acciones
+// VENTA DE PRIMA: elegibilidad SUAVE. Ya NO se gatea por volumen del subyacente
+// (excluía blue-chips) ni por OI total de cadena (un solo weekly rara vez llega a
+// 10k). La liquidez real se juzga en la pata corta (ver MIN_LEG_OI). Se conservan
+// cap (solo acciones), precio y volumen de opciones del día como criba mínima.
+export const MIN_MARKET_CAP = 10_000_000_000; // $10B (no aplica a ETFs de índice)
 export const MIN_PRICE = 30; // $30
-export const MIN_CHAIN_OI = 10_000; // contratos en el vencimiento
 export const MIN_CHAIN_VOLUME = 2_000; // contratos del día
-export const MAX_TYPICAL_SPREAD = 0.05; // bid-ask típico en la banda de delta
+// Bid-ask típico como FRACCIÓN del mid (no absoluto). Con datos de MarketSnack
+// el spread absoluto de $0.05 rechazaba TODO el universo: en opciones baratas
+// (deep-OTM) un spread de $0.06 es normal aunque sea >20% del mid, y en nombres
+// caros $0.05 es imposible. La verdadera protección de edge sigue siendo el
+// tope del 30% del crédito (MAX_SPREAD_CONSUMES_CREDIT). Aquí solo descartamos
+// spreads groseramente anchos relativos al precio de la opción (≤25% del mid).
+// Se midió a 0.20 y rechazaba megacaps líquidos (MSFT/AAPL/META en 22–24%) que
+// solo se ven anchos porque esta muestra es deep-OTM (Δ0.10–0.19); a 0.25 pasan
+// al juicio real, donde el bid-ask por pata (≤20%) y el tope del 30% del crédito
+// —sobre los strikes que de verdad se operan— siguen filtrando la iliquidez.
+export const MAX_TYPICAL_SPREAD_PCT = 0.25; // bid-ask típico ≤25% del mid
+// Banda de delta donde se MIDE el bid-ask típico de elegibilidad. Se fija en
+// Δ 0.10–0.19 (opciones lejanas y baratas, donde el mercado cotiza en centavos y
+// el bid-ask relativo es representativo de la liquidez de la cadena). Coincide
+// casi con la banda del strike corto de venta de prima (0.10–0.15); se mantiene
+// hasta 0.19 para no medir con una sola muestra cuando el grid es escaso.
+export const ELIG_SPREAD_DELTA_MIN = 0.10;
+export const ELIG_SPREAD_DELTA_MAX = 0.19;
 
 // ── Umbrales de selección/liquidez de contrato ──────────────────────────
-export const SHORT_DELTA_MIN = 0.15;
-export const SHORT_DELTA_MAX = 0.30; // INCLUSIVO (0.30 se acepta)
-export const ELEVATED_DELTA = 0.25; // etiqueta ⚠ por encima
+// VENTA DE PRIMA (doc CREDIT SPREADS.txt): la DELTA es el selector principal y el
+// objetivo es vender LEJOS del dinero, ~0.12, con banda 0.10–0.15. El doc es
+// explícito: en semanales (4–7 DTE) una delta de 0.30 es "demasiado riesgosa"
+// porque un movimiento pequeño mete el corto ITM. A delta ≤0.15 la probabilidad
+// teórica de expirar sin valor ronda el 85–90%. Antes esta banda era 0.15–0.30
+// (perfil institucional cerca del dinero) y, combinada con el filtro 1σ, se
+// contradecía sola: un corto de 0.20–0.30 cae DENTRO de 1σ y el 1σ lo descartaba,
+// así que el escáner casi nunca surtía los contratos de prima que pide el operador.
+export const SHORT_DELTA_MIN = 0.10;
+export const SHORT_DELTA_MAX = 0.15; // INCLUSIVO (venta de prima: banda 0.10–0.15)
+export const SHORT_DELTA_TARGET = 0.12; // objetivo del doc (selector principal)
+export const ELEVATED_DELTA = 0.14; // etiqueta ⚠ cerca del tope de la banda
 export const LONG_DELTA_MIN = 0.02;
 export const LONG_DELTA_MAX = 0.05;
+// Ancho ADAPTATIVO al grid de strikes del subyacente (ago 2026). Antes el ancho
+// era una banda RÍGIDA $1–$2; pero los subyacentes caros del universo (NVDA ~$220,
+// MSFT ~$500, AMZN…) tienen los strikes OTM espaciados a $2.50 o $5, así que un
+// spread de $1–$2 es geométricamente IMPOSIBLE de armar y el escáner descartaba
+// ~78% de las patas cortas por "sin pata larga en el ancho" (medido ago 2026, no
+// por 1σ ni macro). La regla real que pedía el operador es "el spread MÁS CEÑIDO":
+// `pickLongLeg` elige la pata larga del strike OTM más CERCANO (ancho mínimo), y el
+// techo sube a $5 solo para admitir el paso de grid más ancho ($5). En un nombre con
+// grid de $1 sigue saliendo un spread de $1; el techo nunca fuerza un spread ancho,
+// solo evita que un hueco de strikes arme algo absurdo. El riesgo por contrato sigue
+// acotado aguas abajo por el sizing (2–3% del capital) del cliente.
 export const WIDTH_MIN = 1.0;
-export const WIDTH_MAX = 2.0;
-export const MAX_LEG_SPREAD = 0.05; // bid-ask por pata
-export const MIN_LEG_OI = 500;
-export const MAX_SPREAD_CONSUMES_CREDIT = 0.30; // bid-ask combinado / crédito
+export const WIDTH_MAX = 5.0;
+// VENTA DE PRIMA (modelo del bot del operador): la liquidez se juzga en la PATA CORTA
+// —la que vendes, donde importa el fill—, no en ambas. La pata larga es protección
+// deep-OTM (Δ0.02–0.05) barata y naturalmente ilíquida: solo se le exige cotización
+// válida. Antes se exigía OI≥500 y bid-ask≤20% en AMBAS patas, y la larga ilíquida
+// mataba casi todos los spreads far-OTM (la queja del operador: "no me encuentra prima").
+export const MAX_LEG_SPREAD_PCT = 0.20; // bid-ask de la PATA CORTA ≤20% del mid
+export const MIN_LEG_OI = 250; // OI mínimo de la PATA CORTA (valor del bot Venta Prima)
+export const MAX_SPREAD_CONSUMES_CREDIT = 0.30; // bid-ask de la CORTA / crédito
 const EPS = 1e-6;
 
 // ── Niveles (soporte/resistencia) ────────────────────────────────────────
@@ -68,17 +117,33 @@ export const TREND_SMA_FAST = 20;
 export const TREND_SMA_SLOW = 50;
 
 // ── Ventana de vencimiento (weekly del frente) ───────────────────────────
-// El operador quiere un weekly corto. Antes era una banda RÍGIDA 5–7 DTE que
-// unos días no atrapaba ningún vencimiento (p. ej. un lunes, con el viernes a
-// 4 DTE y el siguiente a 11). Ahora se toma el weekly MÁS CERCANO dentro de
-// [3,10] DTE: evita el 0–2 DTE (zona gamma) y nunca queda vacío por calendario.
-export const DTE_MIN = 3;
-export const DTE_MAX = 10;
+// VENTA DE PRIMA: el doc CREDIT SPREADS.txt centra la estrategia en el semanal
+// 4–7 DTE (rota capital rápido, decaimiento theta acelerado de mié→vie, gestión
+// activa). Se toma el weekly MÁS CERCANO dentro de [4,7] DTE: evita el 0–3 DTE
+// (zona gamma pura) y el 8+ (ya no es el decaimiento acelerado que busca el doc).
+export const DTE_MIN = 4;
+export const DTE_MAX = 7;
 
-// ── Gestión ──────────────────────────────────────────────────────────────
-export const TAKE_PROFIT_PCT = 0.85; // cerrar al 85% del crédito
-export const STOP_LOSS_MULT = 2; // stop a 2× el crédito
-export const DELTA_ROLL_ALERT = 0.30; // rolar/cerrar si Δ corto supera esto
+// ── Macro (Filtro 3) ──────────────────────────────────────────────────────
+// Eventos macro DUROS: pueden cambiar el RÉGIMEN del subyacente (la Fed marca
+// tendencia, el IPC/PCE repricean la curva de tasas) → descarte eliminatorio.
+// El NFP es BLANDO: mueve el precio un día y suele revertir, así que NO descarta
+// — se adjunta al candidato como aviso (mismo patrón de etiqueta que ivRankLow /
+// elevatedDelta: se hace visible en vez de eliminatorio y el operador decide).
+export const HARD_MACRO_KINDS: MacroEventKind[] = ["FOMC", "CPI", "PCE"];
+export function isHardMacro(e: MacroEvent): boolean {
+  return HARD_MACRO_KINDS.includes(e.kind);
+}
+
+// ── Gestión (reglas de oro del doc para 4–7 DTE) ──────────────────────────
+// Toma de ganancias TEMPRANA al 50% del beneficio máximo: en semanales el
+// decaimiento es muy rápido y exprimir el último 10–20% expone a riesgo gamma
+// desproporcionado (el doc lo prohíbe explícitamente). Antes estaba en 85%, que
+// hacía justo lo contrario. Stop estricto a 2.5× el crédito. Alerta de gamma /
+// roll cuando el delta del corto supera 0.40 cerca del vencimiento.
+export const TAKE_PROFIT_PCT = 0.50; // cerrar al 50% del beneficio máximo
+export const STOP_LOSS_MULT = 2.5; // stop a 2.5× el crédito
+export const DELTA_ROLL_ALERT = 0.40; // rolar/cerrar si Δ corto supera esto (gamma)
 export const GAMMA_ALERT_DTE = 2; // 0–2 DTE = zona gamma
 
 export type Bias = "alcista" | "bajista" | "neutral";
@@ -184,8 +249,8 @@ export interface EligibilityInput {
   hasWeeklies: boolean;
   chainOpenInterest: number; // OI total de la cadena en el vencimiento
   chainVolume: number; // volumen de opciones del día en la cadena
-  /** bid-ask típico (mediana) en strikes de la banda de delta. null si no hay ninguno. */
-  typicalSpreadAtDelta: number | null;
+  /** bid-ask típico como fracción del mid (mediana) en strikes de Δ 0.10–0.19. null si no hay ninguno. */
+  typicalSpreadPctAtDelta: number | null;
 }
 
 export interface EligibilityResult {
@@ -195,29 +260,29 @@ export interface EligibilityResult {
 
 export function eligibility(input: EligibilityInput): EligibilityResult {
   const fails: string[] = [];
-  if (input.isEtf) fails.push("Es ETF/ETN/fondo cotizado");
-  if (input.marketCap == null || input.marketCap < MIN_MARKET_CAP)
+  // VENTA DE PRIMA (modelo del bot del operador): elegibilidad SUAVE. La liquidez de
+  // verdad se juzga en la PATA CORTA (buildStructure). Aquí solo se descartan nombres
+  // groseramente ilíquidos. Los ETFs de índice amplio (SPY/QQQ/IWM) NO gatean por
+  // market cap (su "cap" no es comparable) — son líquidos por construcción. Ya NO se
+  // exige OI total de cadena ≥10k (al mirar un solo vencimiento semanal, casi ningún
+  // nombre lo alcanza) ni volumen del subyacente ≥5M (excluía blue-chips de calidad).
+  if (!input.isEtf && (input.marketCap == null || input.marketCap < MIN_MARKET_CAP))
     fails.push(`Cap. de mercado ${fmtB(input.marketCap)} < $10B`);
-  if (input.avgVolume20d == null || input.avgVolume20d < MIN_AVG_VOLUME_20D)
-    fails.push(`Volumen 20d ${fmtM(input.avgVolume20d)} < 5M`);
   if (!(input.spot >= MIN_PRICE)) fails.push(`Precio $${input.spot.toFixed(2)} < $30`);
-  if (!input.hasWeeklies) fails.push("Sin vencimiento semanal 3–10 DTE");
-  if (input.chainOpenInterest < MIN_CHAIN_OI)
-    fails.push(`OI de la cadena ${Math.round(input.chainOpenInterest)} < 10,000`);
+  if (!input.hasWeeklies) fails.push("Sin vencimiento semanal 4–7 DTE");
   if (input.chainVolume < MIN_CHAIN_VOLUME)
     fails.push(`Volumen de opciones ${Math.round(input.chainVolume)} < 2,000`);
-  if (input.typicalSpreadAtDelta == null)
-    fails.push("Sin strikes en Δ 0.15–0.30 para medir bid-ask");
-  else if (input.typicalSpreadAtDelta > MAX_TYPICAL_SPREAD + EPS)
-    fails.push(`Bid-Ask típico $${input.typicalSpreadAtDelta.toFixed(2)} > $0.05`);
+  if (input.typicalSpreadPctAtDelta == null)
+    fails.push("Sin strikes en Δ 0.10–0.19 para medir bid-ask");
+  else if (input.typicalSpreadPctAtDelta > MAX_TYPICAL_SPREAD_PCT + EPS)
+    fails.push(
+      `Bid-Ask típico ${(input.typicalSpreadPctAtDelta * 100).toFixed(0)}% del mid > ${(MAX_TYPICAL_SPREAD_PCT * 100).toFixed(0)}%`,
+    );
   return { ok: fails.length === 0, fails };
 }
 
 function fmtB(n: number | null): string {
   return n == null ? "n/d" : `$${(n / 1e9).toFixed(1)}B`;
-}
-function fmtM(n: number | null): string {
-  return n == null ? "n/d" : `${(n / 1e6).toFixed(1)}M`;
 }
 
 // ── PURO: tipos de salida (fichas 9-B) ───────────────────────────────────
@@ -249,14 +314,14 @@ export interface SpreadStats {
   probOtmPct: number; // (1 − |Δ corto|) × 100
   breakevenHitRatePct: number; // (1 − credit/width) × 100
   marginOverBreakevenPts: number; // probOtm − hitRate (puntos)
-  elevatedDelta: boolean; // |Δ corto| > 0.25
+  elevatedDelta: boolean; // |Δ corto| > 0.14 (tope de la banda 0.10–0.15)
 }
 
 export interface SpreadManagement {
-  takeProfitGain: number; // $ por contrato al 85% del crédito
-  stopLossLoss: number; // $ por contrato (2× crédito)
+  takeProfitGain: number; // $ por contrato al 50% del beneficio máximo
+  stopLossLoss: number; // $ por contrato (2.5× crédito)
   gammaAlert: boolean; // dte ≤ 2
-  deltaRollAlert: number; // 0.30
+  deltaRollAlert: number; // 0.40
   riskPerContract: number; // = maxRisk
 }
 
@@ -286,8 +351,20 @@ export interface SpreadCandidate {
   ivRank: number | null;
   /** true si el IV Rank quedó por debajo del piso preferido (>40). */
   ivRankLow: boolean;
-  /** Soporte/resistencia que protege el strike corto (filtro DURO). */
-  guard: SpreadGuard;
+  /**
+   * Soporte/resistencia que protege el strike corto. Normalmente es un filtro DURO
+   * (nunca null), pero en MODO EXPERTO un candidato sin nivel guardián se muestra
+   * con guard=null y un aviso en `warnings` en vez de descartarse.
+   */
+  guard: SpreadGuard | null;
+  /** Eventos macro BLANDOS (NFP) dentro de la ventana: avisan, no descartan. */
+  softMacroEvents: MacroEvent[];
+  /**
+   * Avisos de MODO EXPERTO: filtros de CONTEXTO (macro, tendencia, nivel guardián,
+   * 1σ estricto) que habrían descartado el candidato pero se degradaron a etiqueta
+   * visible porque el operador pidió ver todo y decidir él. Vacío en modo seguro.
+   */
+  warnings: string[];
 }
 
 export type SpreadStatus = "candidato" | "descartado" | "no_elegible" | "sin_candidatos";
@@ -324,6 +401,15 @@ export interface CreditSpreadInput {
   earnings: EarningsFlag;
   /** Eventos macro DENTRO de la ventana del trade (ya filtrados por la ruta). */
   macroEvents: MacroEvent[];
+  /**
+   * MODO EXPERTO (petición del operador): degrada los filtros de CONTEXTO
+   * — macro (FOMC/CPI/PCE), tendencia, nivel guardián y 1σ estricto — de descarte
+   * a AVISO visible en el candidato, para que el dueño (que opera venta de prima de
+   * verdad) vea el contrato y decida él. Deja intactas la banda 4–7 DTE, la delta
+   * 0.10–0.15 y toda la validación de liquidez/estructura (esos son seguridad, no
+   * contexto). Sin él (modo seguro/estudiantes), esos filtros bloquean.
+   */
+  expert?: boolean;
 }
 
 // ── PURO: selección de patas y armado de estructura ──────────────────────
@@ -355,28 +441,42 @@ function toLeg(q: SpreadQuote, m: number): SpreadLeg {
 }
 
 /**
- * Elige la pata larga: mismo tipo, más OTM que la corta, ancho $1–$2 (restricción
- * DURA). Entre las válidas, prefiere el delta objetivo 0.02–0.05: se ordena por
- * cercanía al punto medio 0.035 (esto favorece protección barata sin salirse del
- * ancho permitido). El ancho es duro; el delta largo es objetivo.
+ * Elige la pata larga: mismo tipo, más OTM que la corta, ancho dentro de
+ * [WIDTH_MIN, WIDTH_MAX]. ADAPTATIVO al grid: prefiere el spread MÁS ESTRECHO
+ * posible (la pata OTM más cercana), que es el riesgo definido mínimo para ese
+ * subyacente. A igualdad de ancho, desempata por el delta largo objetivo 0.02–0.05
+ * (cercanía al punto medio 0.035 → protección barata). Así un nombre con grid de $1
+ * arma un spread de $1 y uno con grid de $5 arma el de $5 (el más ceñido que existe),
+ * sin que el techo fuerce nunca un spread más ancho de lo necesario.
  */
 function pickLongLeg(
   type: SpreadType,
   shortStrike: number,
   candidates: SpreadQuote[],
 ): SpreadQuote | null {
-  const moreOtm = candidates.filter((q) => {
-    if (q.type !== type) return false;
-    const width = type === "put" ? shortStrike - q.strike : q.strike - shortStrike;
-    return width >= WIDTH_MIN - EPS && width <= WIDTH_MAX + EPS && mid(q.bid, q.ask) != null;
-  });
+  const moreOtm = candidates
+    .map((q) => ({
+      q,
+      width: type === "put" ? shortStrike - q.strike : q.strike - shortStrike,
+    }))
+    .filter(
+      ({ q, width }) =>
+        q.type === type &&
+        width >= WIDTH_MIN - EPS &&
+        width <= WIDTH_MAX + EPS &&
+        mid(q.bid, q.ask) != null,
+    );
   if (moreOtm.length === 0) return null;
   const IDEAL = (LONG_DELTA_MIN + LONG_DELTA_MAX) / 2; // 0.035
-  return moreOtm.reduce((best, q) =>
-    Math.abs(Math.abs(q.delta ?? 0) - IDEAL) < Math.abs(Math.abs(best.delta ?? 0) - IDEAL)
-      ? q
-      : best,
-  );
+  return moreOtm.reduce((best, cur) => {
+    // Ancho mínimo manda; a igualdad (±$0.01), el delta más cercano al objetivo.
+    if (cur.width < best.width - 0.01) return cur;
+    if (cur.width > best.width + 0.01) return best;
+    return Math.abs(Math.abs(cur.q.delta ?? 0) - IDEAL) <
+      Math.abs(Math.abs(best.q.delta ?? 0) - IDEAL)
+      ? cur
+      : best;
+  }).q;
 }
 
 /**
@@ -396,11 +496,16 @@ export function buildStructure(input: {
   supports: SpreadLevel[];
   resistances: SpreadLevel[];
   ivRank: number | null;
+  softMacroEvents?: MacroEvent[];
+  /** Modo experto: el nivel guardián ausente avisa en vez de descartar. */
+  expert?: boolean;
+  /** Avisos a nivel escaneo (macro/tendencia degradados) que hereda el candidato. */
+  baseWarnings?: string[];
 }): SpreadCandidate | null {
   const { ticker, sector, type, spot, short } = input;
 
   const absDeltaShort = Math.abs(short.delta ?? 0);
-  // Banda de delta corta 0.15–0.30 (inclusiva).
+  // Banda de delta corta 0.10–0.15 (inclusiva; venta de prima).
   if (absDeltaShort < SHORT_DELTA_MIN - EPS || absDeltaShort > SHORT_DELTA_MAX + EPS) return null;
 
   const shortMid = mid(short.bid, short.ask);
@@ -418,29 +523,49 @@ export function buildStructure(input: {
   if (!(credit > 0)) return null; // tiene que ser un crédito real
   const creditPct = (credit / width) * 100;
 
-  // Liquidez de contrato.
+  // Liquidez de contrato — centrada en la PATA CORTA (venta de prima). La pata larga
+  // ya pasó el único filtro que se le exige: cotización válida (mid != null, arriba).
   const shortLeg = toLeg(short, shortMid);
   const longLeg = toLeg(longQ, longMid);
-  if (!(shortLeg.bid > 0)) return null; // bid>0 en la corta
-  if (shortLeg.spreadAbs > MAX_LEG_SPREAD + EPS || longLeg.spreadAbs > MAX_LEG_SPREAD + EPS) return null;
-  if (shortLeg.openInterest < MIN_LEG_OI || longLeg.openInterest < MIN_LEG_OI) return null;
-  if (!(shortLeg.volume > 0) || !(longLeg.volume > 0)) return null;
-  // El bid-ask combinado no puede comerse >30% del crédito.
-  const combinedSpread = shortLeg.spreadAbs + longLeg.spreadAbs;
-  if (combinedSpread > MAX_SPREAD_CONSUMES_CREDIT * credit + EPS) return null;
+  if (!(shortLeg.bid > 0)) return null; // bid>0 en la corta (hay prima real que cobrar)
+  // Bid-ask de la CORTA ≤20% del mid (relativo, no absoluto).
+  const shortLegRel = shortLeg.mid > 0 ? shortLeg.spreadAbs / shortLeg.mid : Infinity;
+  if (shortLegRel > MAX_LEG_SPREAD_PCT + EPS) return null;
+  if (shortLeg.openInterest < MIN_LEG_OI) return null; // OI≥250 en la corta
+  if (!(shortLeg.volume > 0)) return null; // volumen del día en la corta
+  // El bid-ask de la CORTA no puede comerse >30% del crédito (protección de edge en
+  // la pata que operas; la larga es protección barata, no entra en este tope).
+  if (shortLeg.spreadAbs > MAX_SPREAD_CONSUMES_CREDIT * credit + EPS) return null;
 
-  // Validación de distancia 1σ, independiente del delta.
+  // Avisos que hereda el candidato (macro/tendencia degradados a nivel escaneo) +
+  // los que se acumulen aquí (1σ, guardián) cuando el modo experto los degrada.
+  const warnings = [...(input.baseWarnings ?? [])];
+
+  // Validación de distancia 1σ, independiente del delta. Filtro de CONTEXTO: en
+  // modo seguro descarta; en experto avisa (a delta 0.10–0.15 el corto casi siempre
+  // queda fuera de 1σ, pero con IV baja puede caer dentro y el dueño quiere verlo).
   const iv = short.iv ?? input.chainIvFallback;
   if (iv == null || !(iv > 0)) return null; // sin IV real no se valida → descartar
   const em = expectedMove(spot, iv, short.dte);
   const shortOutside1Sigma =
     type === "put" ? short.strike < em.lower1 : short.strike > em.upper1;
-  if (!shortOutside1Sigma) return null;
+  if (!shortOutside1Sigma) {
+    if (!input.expert) return null;
+    warnings.push("Strike corto DENTRO de 1σ del movimiento esperado");
+  }
 
-  // Soporte/resistencia (filtro DURO): put por debajo de un soporte importante,
-  // call por encima de una resistencia importante.
+  // Soporte/resistencia (filtro de CONTEXTO): put por debajo de un soporte importante,
+  // call por encima de una resistencia importante. En modo experto la ausencia de
+  // nivel guardián avisa en vez de descartar.
   const guardLevel = guardingLevel(type, short.strike, input.supports, input.resistances);
-  if (!guardLevel) return null;
+  if (!guardLevel) {
+    if (!input.expert) return null;
+    warnings.push(
+      type === "put"
+        ? "Sin soporte fuerte por encima del strike corto"
+        : "Sin resistencia fuerte por debajo del strike corto",
+    );
+  }
 
   // Economía.
   const maxRisk = (width - credit) * MULTIPLIER;
@@ -492,11 +617,15 @@ export function buildStructure(input: {
       longLeg.absDelta >= LONG_DELTA_MIN - EPS && longLeg.absDelta <= LONG_DELTA_MAX + EPS,
     ivRank: input.ivRank,
     ivRankLow: input.ivRank != null && input.ivRank < IV_RANK_LABEL_MIN,
-    guard: {
-      price: guardLevel.price,
-      strength: guardLevel.strength,
-      distancePct: Math.abs((guardLevel.price - short.strike) / short.strike) * 100,
-    },
+    guard: guardLevel
+      ? {
+          price: guardLevel.price,
+          strength: guardLevel.strength,
+          distancePct: Math.abs((guardLevel.price - short.strike) / short.strike) * 100,
+        }
+      : null,
+    softMacroEvents: input.softMacroEvents ?? [],
+    warnings,
   };
 }
 
@@ -529,24 +658,31 @@ export function creditSpreadCandidates(input: CreditSpreadInput): SpreadScan {
     trend,
   };
 
-  // Filtro 0 — Instrumento.
-  if (input.isEtf) {
-    return { ...base, status: "descartado", reason: "ETF/ETN/fondo cotizado" };
-  }
+  // Filtro 0 — Instrumento: en venta de prima los ETFs de índice amplio (SPY/QQQ/IWM)
+  // SÍ se permiten (son el vehículo estándar). El universo curado ya acota qué ETFs
+  // entran; la elegibilidad no gatea a los ETFs por market cap.
 
-  // Weekly del frente: el vencimiento MÁS CERCANO con DTE en [3,10]. La ventana
+  // Weekly del frente: el vencimiento MÁS CERCANO con DTE en [4,7]. La ventana
   // es un único vencimiento (el más próximo), no todo el rango.
   const inBand = input.quotes.filter((q) => q.dte >= DTE_MIN && q.dte <= DTE_MAX);
   const targetDte = inBand.length > 0 ? Math.min(...inBand.map((q) => q.dte)) : null;
   const window = targetDte != null ? inBand.filter((q) => q.dte === targetDte) : [];
   const hasWeeklies = window.length > 0;
 
-  // Filtro 1 — Elegibilidad (liquidez del subyacente/cadena).
+  // Filtro 1 — Elegibilidad (liquidez del subyacente/cadena). El bid-ask típico
+  // se mide en la banda Δ 0.10–0.19 del mandato (§3), no en la del strike corto.
   const bandRows = window.filter((q) => {
     const d = Math.abs(q.delta ?? 0);
-    return d >= SHORT_DELTA_MIN - EPS && d <= SHORT_DELTA_MAX + EPS && q.bid != null && q.ask != null;
+    return d >= ELIG_SPREAD_DELTA_MIN - EPS && d <= ELIG_SPREAD_DELTA_MAX + EPS && q.bid != null && q.ask != null;
   });
-  const typicalSpreadAtDelta = median(bandRows.map((q) => (q.ask ?? 0) - (q.bid ?? 0)));
+  // Bid-ask relativo al mid, no absoluto: (ask − bid) / mid por strike.
+  const bandRelSpreads = bandRows
+    .map((q) => {
+      const m = mid(q.bid, q.ask);
+      return m != null && m > 0 ? ((q.ask ?? 0) - (q.bid ?? 0)) / m : null;
+    })
+    .filter((x): x is number => x != null);
+  const typicalSpreadPctAtDelta = bandRelSpreads.length ? median(bandRelSpreads) : null;
   const elig = eligibility({
     isEtf: input.isEtf,
     marketCap: input.marketCap,
@@ -555,7 +691,7 @@ export function creditSpreadCandidates(input: CreditSpreadInput): SpreadScan {
     hasWeeklies,
     chainOpenInterest: window.reduce((s, q) => s + q.openInterest, 0),
     chainVolume: window.reduce((s, q) => s + q.volume, 0),
-    typicalSpreadAtDelta,
+    typicalSpreadPctAtDelta,
   });
   if (!elig.ok) {
     return {
@@ -571,22 +707,37 @@ export function creditSpreadCandidates(input: CreditSpreadInput): SpreadScan {
     return { ...base, status: "descartado", reason: "Earnings dentro de la ventana" };
   }
 
-  // Filtro 3 — Macro: FOMC/CPI/PCE/NFP dentro de la ventana → DESCARTAR.
-  if (input.macroEvents.length > 0) {
-    const kinds = [...new Set(input.macroEvents.map((e) => e.kind))].join(", ");
-    return { ...base, status: "descartado", reason: `Evento macro en la ventana (${kinds})` };
+  // Avisos de modo experto que heredan todos los candidatos de este ticker.
+  const expertWarnings: string[] = [];
+
+  // Filtro 3 — Macro: solo los DUROS (FOMC/CPI/PCE) descartan; el NFP es blando
+  // (mueve el precio un día y suele revertir) y se adjunta como aviso al candidato.
+  // En MODO EXPERTO los DUROS también degradan a aviso: el operador decide.
+  const hardMacro = input.macroEvents.filter(isHardMacro);
+  if (hardMacro.length > 0) {
+    const kinds = [...new Set(hardMacro.map((e) => e.kind))].join(", ");
+    if (!input.expert) {
+      return { ...base, status: "descartado", reason: `Evento macro en la ventana (${kinds})` };
+    }
+    expertWarnings.push(`Evento macro DURO en la ventana (${kinds})`);
   }
+  const softMacroEvents = input.macroEvents.filter((e) => !isHardMacro(e));
 
   // Filtro 4 — Tendencia clara que concuerde con el sesgo. El sesgo manual filtra;
-  // la tendencia del precio confirma. Sin concordancia → DESCARTAR.
+  // la tendencia del precio confirma. Sin concordancia → DESCARTAR. En MODO EXPERTO
+  // se cae al sesgo manual (typesForBias) con un aviso: la tendencia deja de mandar.
   const trendTypes = typesForTrend(trend);
-  const allowed = typesForBias(input.bias).filter((t) => trendTypes.includes(t));
+  let allowed = typesForBias(input.bias).filter((t) => trendTypes.includes(t));
   if (allowed.length === 0) {
     const reason =
       trend === "lateral"
         ? "Sin tendencia clara (precio lateral)"
         : `Tendencia ${trend} no concuerda con el sesgo ${input.bias}`;
-    return { ...base, status: "descartado", reason };
+    if (!input.expert) {
+      return { ...base, status: "descartado", reason };
+    }
+    allowed = typesForBias(input.bias);
+    expertWarnings.push(reason);
   }
 
   // Estructuras (selección de patas + crédito + 1σ + soporte/resistencia + liquidez).
@@ -594,7 +745,7 @@ export function creditSpreadCandidates(input: CreditSpreadInput): SpreadScan {
   const ivRank = ivRankProxy(input.closes);
   const out: SpreadCandidate[] = [];
   for (const type of allowed) {
-    // Candidatos de pata corta: del tipo, en banda 0.15–0.30, ordenados por delta
+    // Candidatos de pata corta: del tipo, en banda 0.10–0.15, ordenados por delta
     // ascendente (priorizar el delta MÁS BAJO que cumpla todo).
     const shorts = window
       .filter((q) => {
@@ -616,6 +767,9 @@ export function creditSpreadCandidates(input: CreditSpreadInput): SpreadScan {
         supports: input.supports,
         resistances: input.resistances,
         ivRank,
+        softMacroEvents,
+        expert: input.expert,
+        baseWarnings: expertWarnings,
       });
       if (cand) out.push(cand);
     }

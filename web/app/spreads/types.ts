@@ -2,6 +2,9 @@
 
 import type { Bias, SpreadScan } from "@/lib/creditSpread";
 
+/** Fuente de la cadena: MarketSnack (default) o Schwab (greeks de bróker). */
+export type Source = "marketsnack" | "schwab";
+
 export interface SpreadStepEvent {
   type: "step";
   label: string;
@@ -14,6 +17,8 @@ export interface SpreadDoneEvent {
   scans: SpreadScan[];
   meta: {
     bias: Bias;
+    /** Fuente que realmente se usó (puede diferir de la pedida si hubo fallback). */
+    source: Source;
     scanned: number;
     failed: number;
     /** Tickers con al menos un candidato válido. */
@@ -24,6 +29,8 @@ export interface SpreadDoneEvent {
     degraded: boolean;
     /** Calendario macro servido de cache viejo (FRED falló). */
     macroStale: boolean;
+    /** Modo experto activo: filtros DUROS degradados a avisos. */
+    expert: boolean;
   };
 }
 

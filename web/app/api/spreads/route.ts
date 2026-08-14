@@ -1,4 +1,4 @@
-// GET /api/spreads?bias=neutral — Escáner de Credit Spreads (weekly del frente, 3–10 DTE) por SSE.
+// GET /api/spreads?bias=neutral — Escáner de Credit Spreads (weekly del frente, 4–7 DTE) por SSE.
 //
 // Orquesta I/O y NADA de criterio: todo lo que decide vive en lib/creditSpread.ts.
 // El saldo NO llega aquí: la ruta devuelve candidatos con métricas y el
@@ -13,6 +13,7 @@ import {
   fetchExpirations,
   fetchOptionChain2,
 } from "@/lib/marketsnack";
+import { marketsnackConfigured } from "@/lib/marketsnackCookie";
 import {
   normalizeChain2,
   expirationsInDteWindow,
@@ -20,6 +21,11 @@ import {
   type Chain2Contract,
 } from "@/lib/optionChain2";
 import { fetchCompany } from "@/lib/massive";
+import {
+  fetchOptionChain as fetchSchwabChain,
+  schwabStatus,
+  type SchwabContract,
+} from "@/lib/schwab";
 import { cachedDailyBars } from "@/lib/barsStore";
 import { avg20dVolume } from "@/lib/volume";
 import { findLevels } from "@/lib/levels";
@@ -38,7 +44,7 @@ import {
   type SpreadScan,
 } from "@/lib/creditSpread";
 import { SPREAD_UNIVERSE } from "@/lib/spreadUniverse";
-import type { SpreadSseEvent } from "@/app/spreads/types";
+import type { SpreadSseEvent, Source } from "@/app/spreads/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -53,6 +59,10 @@ function sse(event: SpreadSseEvent): string {
 
 function isBias(v: string | null): v is Bias {
   return v === "alcista" || v === "bajista" || v === "neutral";
+}
+
+function isSource(v: string | null): v is Source {
+  return v === "marketsnack" || v === "schwab";
 }
 
 /** Corre `worker` sobre `items` con como mucho `limit` en vuelo a la vez. */
@@ -90,14 +100,14 @@ function toSpreadQuote(c: Chain2Contract, now: Date): SpreadQuote {
 }
 
 /**
- * Descarga las cadenas de la banda 3–10 DTE desde MarketSnack: una llamada de
+ * Descarga las cadenas de la banda 4–7 DTE desde MarketSnack: una llamada de
  * vencimientos + una de cadena por cada fecha del rango. El motor elige luego el
  * weekly del frente (el vencimiento más cercano de la banda). Devuelve los
  * contratos ya normalizados a SpreadQuote.
  */
 async function fetchWindowQuotes(ticker: string, now: Date): Promise<SpreadQuote[]> {
   const expirations = await fetchExpirations(ticker);
-  // Toda la banda [3,10]; creditSpreadCandidates se queda con el más cercano.
+  // Toda la banda [4,7]; creditSpreadCandidates se queda con el más cercano.
   const dates = expirationsInDteWindow(expirations.map((e) => e.date), DTE_MIN, DTE_MAX, now);
   const quotes: SpreadQuote[] = [];
   for (const date of dates) {
@@ -107,10 +117,51 @@ async function fetchWindowQuotes(ticker: string, now: Date): Promise<SpreadQuote
   return quotes;
 }
 
+/**
+ * SchwabContract → SpreadQuote. Schwab entrega el delta ya FIRMADO (calls +,
+ * puts −) igual que MarketSnack, pero la IV viene en PORCENTAJE (p. ej. 32.5) →
+ * se pasa a decimal. El DTE se recalcula desde el vencimiento (no se confía en el
+ * daysToExpiration de Schwab) para casar exactamente con la banda del motor.
+ */
+function toSpreadQuoteFromSchwab(c: SchwabContract, now: Date): SpreadQuote {
+  return {
+    strike: c.strike,
+    type: c.contractType,
+    expiration: c.expiration,
+    dte: dteOf(c.expiration, now),
+    bid: c.bid,
+    ask: c.ask,
+    delta: c.delta, // Schwab ya lo da con signo (puts negativo)
+    iv: c.iv != null ? c.iv / 100 : null, // Schwab da IV en % → decimal
+    openInterest: c.openInterest,
+    volume: c.volume,
+  };
+}
+
+/**
+ * Cadena de la banda 4–7 DTE desde Schwab. A diferencia de MarketSnack (una
+ * llamada por vencimiento), Schwab filtra por fromDate/toDate en el servidor: una
+ * sola llamada por ticker con greeks/IV/OI/bid-ask de bróker. El motor no cambia.
+ */
+async function fetchWindowQuotesSchwab(ticker: string, now: Date): Promise<SpreadQuote[]> {
+  const today = now.toISOString().slice(0, 10);
+  const toDate = addDaysStr(today, DTE_MAX);
+  const { contracts } = await fetchSchwabChain(ticker, {
+    contractType: "ALL",
+    fromDate: today,
+    toDate,
+  });
+  return contracts.map((c) => toSpreadQuoteFromSchwab(c, now));
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const biasParam = url.searchParams.get("bias");
   const bias: Bias = isBias(biasParam) ? biasParam : "neutral";
+  const sourceParam = url.searchParams.get("source");
+  const requestedSource: Source = isSource(sourceParam) ? sourceParam : "marketsnack";
+  // Modo experto: degrada los filtros DUROS (macro/tendencia/nivel guardián) a avisos.
+  const expert = url.searchParams.get("expert") === "1";
   const now = new Date();
   const today = now.toISOString().slice(0, 10);
   // La vida máxima del trade para el filtro macro: hoy → hoy+7.
@@ -124,16 +175,40 @@ export async function GET(req: Request) {
       const scans: SpreadScan[] = [];
 
       try {
-        // 1. Cookie de MarketSnack — requisito duro (fuente de delta/IV reales).
-        if (!process.env.MARKETSNACK_COOKIE?.trim()) {
+        // 1. Resolver la fuente. Schwab da greeks/IV de bróker en una sola llamada
+        // por ticker, pero su OAuth es de un solo usuario y el refresh caduca (~7
+        // días): si se pide Schwab y no está conectado, se cae a MarketSnack (si hay
+        // cookie) en vez de romper el escáner. El mandato prohíbe estimar el delta,
+        // así que sin ninguna fuente real → error claro, nunca estimación silenciosa.
+        const hasCookie = await marketsnackConfigured();
+        let source: Source = requestedSource;
+        if (source === "schwab") {
+          const st = await schwabStatus().catch(() => null);
+          if (!st?.connected) {
+            if (hasCookie) {
+              source = "marketsnack";
+              send({ type: "step", label: "Schwab sin conectar → usando MarketSnack" });
+            } else {
+              send({
+                type: "error",
+                kind: "schwab",
+                message:
+                  "Schwab no está conectado y no hay cookie de MarketSnack de respaldo. Conecta Schwab en /schwab o pega la cookie en /ajustes.",
+              });
+              return;
+            }
+          }
+        }
+        if (source === "marketsnack" && !hasCookie) {
           send({
             type: "error",
             kind: "marketsnack",
             message:
-              "Falta MARKETSNACK_COOKIE en .env.local. El escáner necesita delta e IV reales de MarketSnack y el mandato prohíbe estimarlos.",
+              "Falta la cookie de MarketSnack. Pégala en /ajustes. El escáner necesita delta e IV reales de MarketSnack y el mandato prohíbe estimarlos.",
           });
           return;
         }
+        const fetchQuotes = source === "schwab" ? fetchWindowQuotesSchwab : fetchWindowQuotes;
 
         // 2. Calendario macro — si no hay, se BLOQUEA (no se opera a ciegas).
         const macro = await cachedMacroCalendar(now);
@@ -150,18 +225,18 @@ export async function GET(req: Request) {
 
         send({
           type: "step",
-          label: `Escaneando ${SPREAD_UNIVERSE.length} acciones · sesgo ${bias}${
-            macro.stale ? " · calendario macro en cache viejo" : ""
-          }`,
+          label: `Escaneando ${SPREAD_UNIVERSE.length} acciones · sesgo ${bias} · fuente ${source}${
+            expert ? " · MODO EXPERTO" : ""
+          }${macro.stale ? " · calendario macro en cache viejo" : ""}`,
         });
 
         await mapLimit(SPREAD_UNIVERSE, CONCURRENCY, async (sym) => {
           try {
-            // Cadena MarketSnack de la banda 3–10 DTE (delta/IV/OI/bid-ask reales).
-            const quotes = await fetchWindowQuotes(sym.ticker, now);
+            // Cadena de la banda 4–7 DTE (delta/IV/OI/bid-ask reales) según la fuente.
+            const quotes = await fetchQuotes(sym.ticker, now);
             if (quotes.length === 0) {
               failed++;
-              send({ type: "step", label: `${sym.ticker}: sin cadena 3–10 DTE` });
+              send({ type: "step", label: `${sym.ticker}: sin cadena 4–7 DTE` });
               return;
             }
 
@@ -199,7 +274,7 @@ export async function GET(req: Request) {
               sector: sym.sector,
               bias,
               spot,
-              isEtf: false, // el universo es solo acciones individuales (test lo garantiza)
+              isEtf: sym.isEtf ?? false, // ETFs de índice amplio (SPY/QQQ/IWM) permitidos en venta de prima
               marketCap: company?.marketCap ?? null,
               avgVolume20d: avgVol,
               quotes,
@@ -208,6 +283,7 @@ export async function GET(req: Request) {
               resistances,
               earnings,
               macroEvents,
+              expert,
             });
             scans.push(scan);
 
@@ -245,12 +321,14 @@ export async function GET(req: Request) {
           scans,
           meta: {
             bias,
+            source,
             scanned: SPREAD_UNIVERSE.length,
             failed,
             withCandidates,
             discarded,
             degraded: failed > SPREAD_UNIVERSE.length / 2,
             macroStale: macro.stale,
+            expert,
           },
         });
       } catch (err) {

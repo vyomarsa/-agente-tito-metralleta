@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import type { SpreadCandidate } from "@/lib/creditSpread";
-import type { RiskProfile } from "@/lib/risk";
 
 const money = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 const money2 = (n: number) => `$${n.toFixed(2)}`;
@@ -14,37 +13,17 @@ const TYPE_LABEL: Record<string, string> = {
   call: "Call Credit Spread",
 };
 
-/**
- * Dimensionamiento en cliente (2–3% del capital, mandato §8). El saldo vive en
- * localStorage y NUNCA llega al servidor. Devuelve el TECHO de contratos según
- * el riesgo por trade del perfil, más las referencias del 2% y 3% del mandato.
- */
-function sizing(maxRisk: number, profile: RiskProfile) {
-  const account = profile.accountSize > 0 ? profile.accountSize : 0;
-  const budget = (account * profile.tolerancePct) / 100;
-  const at = (p: number) => (maxRisk > 0 ? Math.floor((account * p) / 100 / maxRisk) : 0);
-  return {
-    budget,
-    maxContracts: maxRisk > 0 ? Math.floor(budget / maxRisk) : 0,
-    at2: at(2),
-    at3: at(3),
-  };
-}
-
 export default function SpreadCard({
   c,
   view,
-  profile,
 }: {
   c: SpreadCandidate;
   view: "estudiante" | "pro";
-  profile: RiskProfile;
 }) {
   const [open, setOpen] = useState(false);
   const e = c.economics;
   const s = c.stats;
   const m = c.management;
-  const size = sizing(e.maxRisk, profile);
 
   const dirWord = c.type === "put" ? "por debajo de" : "por encima de";
 
@@ -67,10 +46,31 @@ export default function SpreadCard({
           COMPRA <b>${c.longLeg.strike}</b> {c.type} · Δ {c.longLeg.delta.toFixed(2)}
         </span>
         <span className="spread-width">ancho ${e.width.toFixed(2)}</span>
-        <span className="wheel-tag" title={`El strike vendido queda ${c.type === "put" ? "por debajo de un soporte" : "por encima de una resistencia"} importante en ${money2(c.guard.price)} (fuerza ${c.guard.strength}/100).`}>
-          {c.type === "put" ? "🛡 soporte" : "🛡 resistencia"} ${c.guard.price.toFixed(0)}
-        </span>
-        {s.elevatedDelta && <span className="wheel-tag warn">⚠ ZONA DE DELTA ELEVADO</span>}
+        {c.guard && (
+          <span className="wheel-tag" title={`El strike vendido queda ${c.type === "put" ? "por debajo de un soporte" : "por encima de una resistencia"} importante en ${money2(c.guard.price)} (fuerza ${c.guard.strength}/100).`}>
+            {c.type === "put" ? "🛡 soporte" : "🛡 resistencia"} ${c.guard.price.toFixed(0)}
+          </span>
+        )}
+        {c.warnings.map((w) => (
+          <span key={w} className="wheel-tag danger" title="Modo experto: filtro DURO degradado a aviso. Tú decides si operas.">
+            ⚡ {w}
+          </span>
+        ))}
+        {s.elevatedDelta && (
+          <span className="wheel-tag warn" title="El delta del corto (>0.14) está en el tope de la banda de venta de prima (0.10–0.15): es el extremo más agresivo aceptable. El objetivo es 0.12.">
+            ⚠ Δ EN EL TOPE (0.14–0.15)
+          </span>
+        )}
+        {c.softMacroEvents.length > 0 && (
+          <span
+            className="wheel-tag warn"
+            title={`Reporte de empleo (NFP) dentro de la ventana (${c.softMacroEvents
+              .map((e) => e.date)
+              .join(", ")}). Mueve el precio un día y suele revertir — no descarta, pero opera con el aviso presente.`}
+          >
+            ⚠ NFP en la ventana
+          </span>
+        )}
         {c.ivRankLow && (
           <span className="wheel-tag" title="IV Rank por debajo del piso preferido (>40): la prima no está especialmente rica.">
             IV Rank bajo
@@ -89,14 +89,20 @@ export default function SpreadCard({
           es <b>{money(e.maxRisk)}</b>. Ganas mientras {c.ticker} no cierre {dirWord}{" "}
           <b>{money2(e.breakeven)}</b> (a {pct(e.distanceToBreakevenPct)} del precio actual de{" "}
           {money2(c.spot)}). Estadísticamente el corto expira sin valor ~
-          <b>{Math.round(s.probOtmPct)}%</b> de las veces. Tu strike vendido queda{" "}
-          {c.type === "put" ? "protegido por un soporte" : "tapado por una resistencia"} en{" "}
-          <b>{money2(c.guard.price)}</b>{c.ivRank != null ? <>, con IV Rank <b>{pct0(c.ivRank)}</b></> : null}.
-          {size.maxContracts > 0 ? (
-            <> Con tu perfil ({profile.tolerancePct}% de riesgo) tu techo es <b>{size.maxContracts}</b> contrato{size.maxContracts === 1 ? "" : "s"}.</>
+          <b>{Math.round(s.probOtmPct)}%</b> de las veces.{" "}
+          {c.guard ? (
+            <>
+              Tu strike vendido queda{" "}
+              {c.type === "put" ? "protegido por un soporte" : "tapado por una resistencia"} en{" "}
+              <b>{money2(c.guard.price)}</b>
+            </>
           ) : (
-            <> Con tu perfil no alcanza ni para 1 contrato sin pasarte del riesgo.</>
+            <>
+              <b>Sin {c.type === "put" ? "soporte" : "resistencia"} que respalde el strike</b> (modo
+              experto)
+            </>
           )}
+          {c.ivRank != null ? <>, con IV Rank <b>{pct0(c.ivRank)}</b></> : null}.
         </p>
       ) : (
         <div className="wheel-grid">
@@ -106,7 +112,7 @@ export default function SpreadCard({
           <span>Mov. esperado 1σ <b>{pct(e.expectedMovePct)}</b></span>
           <span>IV <b>{pct(c.iv * 100)}</b></span>
           <span>IV Rank <b>{c.ivRank != null ? pct0(c.ivRank) : "—"}</b>{c.ivRankLow ? <small className="warn"> bajo</small> : null}</span>
-          <span>{c.type === "put" ? "Soporte" : "Resistencia"} respaldo <b>{money2(c.guard.price)}</b> <small>(fuerza {c.guard.strength})</small></span>
+          <span>{c.type === "put" ? "Soporte" : "Resistencia"} respaldo <b>{c.guard ? money2(c.guard.price) : "—"}</b> {c.guard ? <small>(fuerza {c.guard.strength})</small> : <small className="warn">sin nivel</small>}</span>
           <span>Corto fuera 1σ <b>{e.shortOutside1Sigma ? "sí ✓" : "no"}</b></span>
           <span>Prob. OTM <b>{pct(s.probOtmPct)}</b></span>
           <span>Hit-rate equilibrio <b>{pct(s.breakevenHitRatePct)}</b></span>
@@ -118,14 +124,16 @@ export default function SpreadCard({
         <div className="wheel-outcomes">
           <div className="spread-block">
             <b>Realidad estadística (§7):</b> la probabilidad de que el corto expire OTM (
-            {pct(s.probOtmPct)}) contrasta con el hit-rate de equilibrio ({pct(s.breakevenHitRatePct)}).
-            El margen entre ambas ({s.marginOverBreakevenPts.toFixed(1)} pts) es tu ventaja real: si
-            fuera ≤0, la prima no paga el riesgo asumido.
+            {pct(s.probOtmPct)}) contrasta con el hit-rate de equilibrio ({pct(s.breakevenHitRatePct)}) —
+            margen {s.marginOverBreakevenPts.toFixed(1)} pts. En venta de prima far-OTM este margen suele
+            rondar 0 o ser algo negativo <em>a vencimiento</em>: el edge NO está en aguantar hasta el
+            final, sino en <b>vender IV cara y cerrar al 50%</b> capturando el decaimiento theta. Por eso
+            se toma ganancia temprano y se respeta el stop.
           </div>
           <div className="spread-block">
-            <b>Gestión (§8):</b> cierra al 85% del crédito → ganancia ~{money(m.takeProfitGain)}. Stop
-            a 2× el crédito → pérdida ~{money(m.stopLossLoss)}. Rola/cierra si el Δ del corto supera{" "}
-            {m.deltaRollAlert.toFixed(2)}.{" "}
+            <b>Gestión (§8):</b> toma de ganancias al 50% del máximo → ganancia ~{money(m.takeProfitGain)}.
+            Stop a 2.5× el crédito → pérdida ~{money(m.stopLossLoss)}. Rola/cierra si el Δ del corto
+            supera {m.deltaRollAlert.toFixed(2)}.{" "}
             {m.gammaAlert && <b>⚠ Zona gamma: quedan ≤2 DTE.</b>}
           </div>
           <div className="spread-block">
@@ -133,12 +141,6 @@ export default function SpreadCard({
             {c.shortLeg.volume.toLocaleString()} · bid-ask {money2(c.shortLeg.spreadAbs)}. Largo OI{" "}
             {c.longLeg.openInterest.toLocaleString()} · vol {c.longLeg.volume.toLocaleString()} · bid-ask{" "}
             {money2(c.longLeg.spreadAbs)}.
-          </div>
-          <div className="spread-block">
-            <b>Tu dimensionamiento (2–3% del capital, mandato §8):</b> con {money(profile.accountSize)} de
-            cuenta, el 2% son {size.at2} contrato{size.at2 === 1 ? "" : "s"} y el 3% son {size.at3}. Tu
-            slider ({profile.tolerancePct}%) da un techo de <b>{size.maxContracts}</b>. El saldo nunca
-            sale de tu navegador.
           </div>
         </div>
       )}

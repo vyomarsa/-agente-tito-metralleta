@@ -1,12 +1,15 @@
-// Universo curado del escáner de Credit Spreads. Se edita A MANO.
+// Universo curado del escáner de Credit Spreads (VENTA DE PRIMA). Se edita A MANO.
 //
-// Reglas del mandato (Sección 1 y 3 del prompt del operador):
-//   1. SOLO acciones individuales. ETFs/ETNs/fondos cotizados PROHIBIDOS
-//      (por eso NO se reutiliza WHEEL_UNIVERSE tal cual: hay que sacar SPY/QQQ/…).
-//   2. Deben ser plausiblemente elegibles: cap ≥ $10B, precio ≥ $30, volumen 20d
-//      ≥ 5M, con vencimientos semanales y cadena muy líquida. La elegibilidad fina
-//      se verifica EN VIVO contra datos reales (lib/creditSpread.ts); esta lista solo
-//      acota a nombres que valga la pena consultar.
+// Reglas:
+//   1. ETFs de índice AMPLIO (SPY/QQQ/IWM) SÍ se permiten — son el vehículo estándar
+//      de venta de prima: ultralíquidos, sin riesgo de earnings idiosincrático y con
+//      la cadena semanal más profunda del mercado. El resto son acciones individuales
+//      de alta liquidez. (Antes se prohibían los ETFs; el mandato original era para el
+//      agente institucional de flujo, no para venta de prima.)
+//   2. Deben ser plausiblemente elegibles: precio ≥ $30, con vencimientos semanales y
+//      cadena muy líquida (cap ≥ $10B para acciones; los ETFs no gatean por cap). La
+//      elegibilidad fina se verifica EN VIVO contra datos reales (lib/creditSpread.ts);
+//      esta lista solo acota a nombres que valga la pena consultar.
 //   3. El `sector` es obligatorio: la Sección 8 limita a UNA posición por sector por
 //      semana, así que el motor/UI lo necesita para avisar de concentración.
 //
@@ -17,10 +20,17 @@ export interface SpreadSymbol {
   ticker: string;
   /** Sector para la regla de concentración (Sección 8). */
   sector: string;
+  /** true si es un ETF de índice amplio (SPY/QQQ/IWM): no gatea por market cap. */
+  isEtf?: boolean;
   razon: string;
 }
 
 export const SPREAD_UNIVERSE: SpreadSymbol[] = [
+  // ── ETFs de índice amplio (el vehículo estándar de venta de prima) ──
+  { ticker: "SPY", sector: "Índice", isEtf: true, razon: "S&P 500: la cadena semanal más líquida del mundo" },
+  { ticker: "QQQ", sector: "Índice", isEtf: true, razon: "Nasdaq 100: weeklies profundos, prima constante" },
+  { ticker: "IWM", sector: "Índice", isEtf: true, razon: "Russell 2000: índice amplio, cadena líquida" },
+
   // ── Tecnología / Semiconductores ──
   { ticker: "NVDA", sector: "Semiconductores", razon: "Cadena semanal profunda, la más negociada del sector" },
   { ticker: "AMD", sector: "Semiconductores", razon: "Semis líquida con IV alta" },
