@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import ThemeToggle from "./ThemeToggle";
-import StockWatchlist from "./StockWatchlist";
+import MarketPulse from "./MarketPulse";
 
 // Barra lateral izquierda persistente (estilo "dashboard"): la marca arriba, la
 // navegación entre las vistas del agente en vertical, y el toggle de tema al pie.
@@ -16,6 +16,7 @@ const NAV: { href: string; label: string; icon: string; hint: string }[] = [
   { href: "/wheel", label: "Wheel", icon: "🎡", hint: "Cash-secured puts" },
   { href: "/spreads", label: "Venta Prima", icon: "✂️", hint: "Credit spreads 4–7 DTE (venta de prima)" },
   { href: "/0dte", label: "0DTE", icon: "🎯", hint: "Cadena del día (cero DTE)" },
+  { href: "/vecinos", label: "Vecinos", icon: "🧲", hint: "Contratos Vecinos 2.0 — imán del GEX + flujo real (0DTE)" },
   { href: "/flow", label: "Time & Sales", icon: "⚡", hint: "Agresividad en vivo" },
   { href: "/schwab", label: "Schwab", icon: "🔗", hint: "Conexión del bróker" },
   { href: "/ajustes", label: "Ajustes", icon: "⚙️", hint: "Cookie de MarketSnack" },
@@ -52,7 +53,7 @@ export default function Sidebar() {
         })}
       </nav>
 
-      <StockWatchlist />
+      <MarketPulse />
 
       <div className="side-foot">
         <ThemeToggle />

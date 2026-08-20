@@ -44,6 +44,7 @@ import {
   type SpreadScan,
 } from "@/lib/creditSpread";
 import { SPREAD_UNIVERSE } from "@/lib/spreadUniverse";
+import { fetchIvRankMap } from "@/lib/tastytrade";
 import type { SpreadSseEvent, Source } from "@/app/spreads/types";
 
 export const runtime = "nodejs";
@@ -230,6 +231,13 @@ export async function GET(req: Request) {
           }${macro.stale ? " · calendario macro en cache viejo" : ""}`,
         });
 
+        // IV Rank REAL de Tastytrade para todo el universo en una tanda. Vacío si
+        // no está configurado → cada ticker cae a su proxy de vol realizada.
+        const ivRankMap = await fetchIvRankMap(SPREAD_UNIVERSE.map((s) => s.ticker));
+        if (ivRankMap.size > 0) {
+          send({ type: "step", label: `IV Rank real de Tastytrade para ${ivRankMap.size} tickers` });
+        }
+
         await mapLimit(SPREAD_UNIVERSE, CONCURRENCY, async (sym) => {
           try {
             // Cadena de la banda 4–7 DTE (delta/IV/OI/bid-ask reales) según la fuente.
@@ -279,6 +287,7 @@ export async function GET(req: Request) {
               avgVolume20d: avgVol,
               quotes,
               closes,
+              realIvRank: ivRankMap.get(sym.ticker) ?? null,
               supports,
               resistances,
               earnings,

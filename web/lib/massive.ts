@@ -181,6 +181,46 @@ export async function fetchCompany(ticker: string): Promise<CompanyInfo> {
   };
 }
 
+/** Cotización mínima para el watchlist lateral (una fila = un símbolo). */
+export interface Quote {
+  ticker: string;
+  price: number | null;
+  change: number | null;
+  changePercent: number | null;
+}
+
+interface BulkSnapshotTicker extends StockSnapshot {
+  ticker?: string;
+}
+
+/**
+ * Snapshot de precio de varios símbolos en UNA sola llamada (para el watchlist).
+ * Usa el endpoint masivo de Massive; devuelve last/change/%change por ticker.
+ */
+export async function fetchQuotes(tickers: string[]): Promise<Quote[]> {
+  const clean = [...new Set(tickers.map((t) => t.trim().toUpperCase()).filter(Boolean))];
+  if (clean.length === 0) return [];
+  const snap = await getJson<{ tickers?: BulkSnapshotTicker[] }>(
+    `/v2/snapshot/locale/us/markets/stocks/tickers?tickers=${encodeURIComponent(clean.join(","))}`,
+  ).catch(() => null);
+
+  const byTicker = new Map<string, BulkSnapshotTicker>();
+  for (const t of snap?.tickers ?? []) {
+    if (t.ticker) byTicker.set(t.ticker.toUpperCase(), t);
+  }
+
+  return clean.map((sym) => {
+    const t = byTicker.get(sym) ?? {};
+    return {
+      ticker: sym,
+      // Mismo criterio que fetchCompany: con el mercado cerrado day.c = 0.
+      price: t.day?.c || t.min?.c || t.prevDay?.c || null,
+      change: t.todaysChange ?? null,
+      changePercent: t.todaysChangePerc ?? null,
+    };
+  });
+}
+
 interface AggBar {
   t: number; // epoch ms
   o: number;

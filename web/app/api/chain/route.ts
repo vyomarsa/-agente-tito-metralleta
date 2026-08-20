@@ -4,6 +4,9 @@ import { countExpirations, sortByOpenInterestDesc, toRow } from "@/lib/compute";
 import { structureScore } from "@/lib/structure";
 import { saveChainSnapshot, type ChainSnapshot } from "@/lib/chainStore";
 import { fetchCompany, fetchOptionChain, MassiveError } from "@/lib/massive";
+import { fetchExpirations, fetchOptionChain2 } from "@/lib/marketsnack";
+import { normalizeChain2, nearestExpirations } from "@/lib/optionChain2";
+import { estimateSpotFromChain } from "@/lib/zerodte";
 import type { ChainEvent, ChainMeta, Row } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -37,7 +40,7 @@ export async function GET(request: Request) {
 
         send({ type: "step", label: "Conectando con Massive…" });
 
-        const { contracts, underlyingPrice, pages, truncated } =
+        const { contracts, underlyingPrice: massivePrice, pages, truncated } =
           await fetchOptionChain(ticker, {
             onPage: (page, accumulated) => {
               send({
@@ -52,6 +55,29 @@ export async function GET(request: Request) {
           send({ type: "error", message: `Sin contratos para "${ticker}".` });
           controller.close();
           return;
+        }
+
+        // Índices como SPX: Massive no cotiza el subyacente (necesitaría `I:SPX`,
+        // fuera del plan). Derivamos el spot por paridad put-call de la cadena de
+        // MarketSnack, igual que la vista 0DTE. Degrada con gracia: sin cookie o si
+        // MarketSnack falla, queda null y el dashboard sigue como hasta ahora.
+        let underlyingPrice = massivePrice;
+        if (underlyingPrice == null) {
+          send({ type: "step", label: `Massive no cotiza ${ticker}; derivando spot de MarketSnack…` });
+          try {
+            const exps = await fetchExpirations(ticker);
+            const front = nearestExpirations(exps.map((e) => e.date), 1, new Date())[0];
+            if (front) {
+              const ms = normalizeChain2(await fetchOptionChain2(ticker, front));
+              const spot = estimateSpotFromChain(ms);
+              if (spot && spot > 0) {
+                underlyingPrice = spot;
+                send({ type: "step", label: `Spot de ${ticker} por paridad: ${spot.toFixed(2)}` });
+              }
+            }
+          } catch {
+            // sin cookie o fallo de MarketSnack → seguimos sin spot
+          }
         }
 
         let rows: Row[] = contracts.map(toRow);

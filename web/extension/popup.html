@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        font-family: system-ui, "Segoe UI", sans-serif;
+        width: 300px;
+        padding: 14px;
+        margin: 0;
+        color: #111;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 4px;
+      }
+      p.sub {
+        font-size: 11px;
+        color: #666;
+        margin: 0 0 12px;
+      }
+      button {
+        background: #111;
+        color: #fff;
+        border: 0;
+        border-radius: 6px;
+        padding: 9px 12px;
+        font-size: 13px;
+        cursor: pointer;
+        width: 100%;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      #status {
+        margin-top: 12px;
+        font-size: 12px;
+        line-height: 1.45;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Tito · Cookie de MarketSnack</h1>
+    <p class="sub">Con sesión iniciada en app.marketsnack.com y Tito corriendo.</p>
+    <button id="go">Traer cookie y enviar a Tito</button>
+    <div id="status">Listo para traer la cookie.</div>
+    <script src="popup.js"></script>
+  </body>
+</html>

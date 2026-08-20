@@ -53,7 +53,9 @@ export default function IvContextCard({ s }: { s: IvContextScore }) {
               </div>
               <div className="cv-metric-pts">{s.iv.points}<span className="muted">/10</span></div>
               <div className="cv-metric-hint muted">
-                {s.iv.band} · ponderada por premium
+                {s.iv.band} · {s.iv.source === "chain"
+                  ? "cadena completa (ATM), ponderada por prima abierta"
+                  : "trades del flujo, ponderada por premium"}
               </div>
             </div>
 
@@ -61,6 +63,12 @@ export default function IvContextCard({ s }: { s: IvContextScore }) {
               <div className="cv-metric-label">IV Rank</div>
               <div className="cv-metric-value">
                 {s.rank.value != null ? `${s.rank.value.toFixed(0)}%` : "—"}
+                {s.rank.source === "tastytrade" && (
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "var(--green)", marginLeft: 6 }}
+                        title="IV Rank real de Tastytrade, no estimado">
+                    · real
+                  </span>
+                )}
               </div>
               <div className="cv-metric-pts">{s.rank.points}<span className="muted">/10</span></div>
               <div className="cv-metric-hint muted">
@@ -95,7 +103,9 @@ export default function IvContextCard({ s }: { s: IvContextScore }) {
 
           <div className="iv-source muted">
             IV Rank calculado con{" "}
-            {s.rank.source === "iv-history"
+            {s.rank.source === "tastytrade"
+              ? <><b>IV Rank REAL de Tastytrade</b> — el rank oficial del proveedor, no una estimación.</>
+              : s.rank.source === "iv-history"
               ? <><b>historial propio de IV</b> — {s.rank.days} días acumulados</>
               : s.rank.source === "realized-proxy"
                 ? <>

@@ -7,7 +7,7 @@ import type { StructureScore } from "@/lib/structure";
 import type { IvContextScore } from "@/lib/ivcontext";
 import type { ValidationScore } from "@/lib/validation";
 import type { ChainSnapshot } from "@/lib/chainStore";
-import { gexAnalysis, type TradeLite } from "@/lib/gex";
+import { gexAnalysis, type TradeLite, type SchwabGreek } from "@/lib/gex";
 import { gexHeatmap, type HeatTrade } from "@/lib/gexHeatmap";
 import { predictPro } from "@/lib/prediction";
 import { findLevels, type ChainLevel, type FlowLevel } from "@/lib/levels";
@@ -27,6 +27,7 @@ import MoneyFlowCard from "./components/MoneyFlowCard";
 import NewsCard from "./components/NewsCard";
 import LevelsCard from "./components/LevelsCard";
 import ProWallsCard from "./components/ProWallsCard";
+import KeyStatsCard from "./components/KeyStatsCard";
 import GexHeatmapCard from "./components/GexHeatmapCard";
 import TradesFeed from "./components/TradesFeed";
 import CompanyHeader from "./components/CompanyHeader";
@@ -70,6 +71,10 @@ export default function Dashboard() {
   const [bars, setBars] = useState<DailyBar[] | null>(null);
   const [structure, setStructure] = useState<StructureScore | null>(null);
   const [chainHistory, setChainHistory] = useState<ChainSnapshot[]>([]);
+  // Greeks REALES por contrato (MarketSnack primero, Schwab de respaldo).
+  // null = no disponible → se estiman con Black-Scholes.
+  const [schwabGreeks, setSchwabGreeks] = useState<Map<string, SchwabGreek> | null>(null);
+  const [greeksSource, setGreeksSource] = useState<"marketsnack" | "schwab">("schwab");
 
   const [aggScore, setAggScore] = useState<AggressionScore | null>(null);
   const [conviction, setConviction] = useState<ConvictionScore | null>(null);
@@ -117,8 +122,11 @@ export default function Dashboard() {
   // GEX (Gamma Exposure) — nodos de concentración + predicción (nodo imán).
   // Se calcula una vez con toda la cadena de Massive + los trades reales.
   const gex = useMemo(() => {
-    if (!chainRows || chainRows.length === 0 || !bars || bars.length === 0) return null;
-    const spot = company?.price ?? chainMeta?.underlyingPrice ?? bars[bars.length - 1].close;
+    if (!chainRows || chainRows.length === 0) return null;
+    // Índices como SPX no traen barras de Massive; con spot (paridad MarketSnack) +
+    // greeks reales el GEX igual computa. estimateIV tolera closes vacíos.
+    const lastClose = bars && bars.length > 0 ? bars[bars.length - 1].close : 0;
+    const spot = company?.price ?? chainMeta?.underlyingPrice ?? lastClose;
     if (!spot || spot <= 0) return null;
     // Une convicción + inusuales (dedupe por id) como los trades reales.
     const seen = new Set<number>();
@@ -130,15 +138,17 @@ export default function Dashboard() {
     }
     return gexAnalysis({
       rows: chainRows,
-      closes: bars.map((b) => b.close),
+      closes: bars ? bars.map((b) => b.close) : [],
       spot,
       trades,
       convictionScore: conviction?.score ?? null,
       structureScore: structure?.score ?? null,
       lowLiquidity: structure?.notional.lowLiquidity ?? false,
       now: new Date(),
+      schwabGreeks: schwabGreeks ?? undefined,
+      greeksSource,
     });
-  }, [chainRows, bars, company, chainMeta, convRows, unusualRows, conviction, structure]);
+  }, [chainRows, bars, company, chainMeta, convRows, unusualRows, conviction, structure, schwabGreeks, greeksSource]);
 
   // Heatmap de GEX por strike × vencimiento — abre el GEX en sus dos dimensiones.
   const heatmap = useMemo(() => {
@@ -150,8 +160,11 @@ export default function Dashboard() {
       seen.add(r.id);
       trades.push({ strike: r.strike, expiration: r.expiration, gamma: r.gamma, premium: r.premium });
     }
-    return gexHeatmap({ rows: chainRows, spot: gex.spot, iv: gex.iv, trades, now: new Date() });
-  }, [chainRows, gex, convRows, unusualRows]);
+    return gexHeatmap({
+      rows: chainRows, spot: gex.spot, iv: gex.iv, trades, now: new Date(),
+      schwabGreeks: schwabGreeks ?? undefined,
+    });
+  }, [chainRows, gex, convRows, unusualRows, schwabGreeks]);
 
   // Prediction Pro — junta los 6 sub-agentes, el mapa GEX y la σ en tres escenarios.
   const prediction = useMemo(() => {
@@ -255,7 +268,7 @@ export default function Dashboard() {
     setBusy(true);
     setSteps([]);
     setCompany(null); setChainRows(null); setChainMeta(null); setBars(null);
-    setStructure(null); setChainHistory([]);
+    setStructure(null); setChainHistory([]); setSchwabGreeks(null); setGreeksSource("schwab");
     setAggScore(null); setConviction(null); setConvRows(null); setConvMeta(null);
     setUnusuality(null); setUnusualRows(null); setIvContext(null); setValidation(null);
     setNotable(null); setFlowMeta(null);
@@ -263,6 +276,34 @@ export default function Dashboard() {
     chainDoneRef.current = false; flowDoneRef.current = false;
     setShowChain(false);
     setCalib({ biasPct: null, samples: 0 }); setCalibReady(false); savedRef.current = null;
+
+    // Greeks REALES por contrato — no bloquea las streams. MarketSnack es la
+    // fuente principal (su plan ya trae gamma/IV reales); Schwab queda de respaldo.
+    // Si ambas fallan, el GEX cae a la estimación Black-Scholes de siempre.
+    const loadGreeks = async () => {
+      const parse = (d: { greeks?: Record<string, SchwabGreek> } | null) =>
+        d?.greeks ? Object.entries(d.greeks) : [];
+      try {
+        const ms = await fetch(`/api/marketsnack/greeks?ticker=${encodeURIComponent(tk)}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null);
+        const msEntries = parse(ms);
+        if (msEntries.length > 0) {
+          setSchwabGreeks(new Map(msEntries));
+          setGreeksSource("marketsnack");
+          return;
+        }
+      } catch {
+        /* cae al respaldo de Schwab */
+      }
+      const sw = await fetch(`/api/schwab/greeks?ticker=${encodeURIComponent(tk)}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null);
+      const swEntries = parse(sw);
+      setSchwabGreeks(swEntries.length > 0 ? new Map(swEntries) : null);
+      setGreeksSource("schwab");
+    };
+    void loadGreeks();
 
     // Backtest del sub-agente 6 sobre los flows ya guardados (no bloquea las streams).
     fetch(`/api/validation?ticker=${encodeURIComponent(tk)}`)
@@ -317,6 +358,25 @@ export default function Dashboard() {
     };
     f.onerror = () => { flowDoneRef.current = true; finish(); f.close(); };
   }
+
+  // El watchlist de la barra lateral pide una búsqueda vía sessionStorage +
+  // evento (o navegación a "/" si estás en otra página). Se lee al montar y en
+  // cada evento; un ref mantiene runSearch fresco sin re-suscribir el listener.
+  const runRef = useRef(runSearch);
+  runRef.current = runSearch;
+  useEffect(() => {
+    const run = () => {
+      let t: string | null = null;
+      try { t = window.sessionStorage.getItem("tito.search"); } catch { /* noop */ }
+      if (t) {
+        try { window.sessionStorage.removeItem("tito.search"); } catch { /* noop */ }
+        runRef.current(t);
+      }
+    };
+    run();
+    window.addEventListener("tito:search", run);
+    return () => window.removeEventListener("tito:search", run);
+  }, []);
 
   const started = steps.length > 0 || company != null || aggScore != null;
 
@@ -413,9 +473,14 @@ export default function Dashboard() {
 
             {view === "pro" && (
               <>
-            <div className="grid-2">
-              <SentimentCard ticker={ticker} parts={sentimentParts} />
-              <PredictionCard ticker={ticker} prediction={prediction} horizonDays={horizonDays} onHorizon={setHorizonDays} topFlows={topFlows} />
+            <div className="pro-overview">
+              <div className="pro-overview-main">
+                <div className="grid-2">
+                  <SentimentCard ticker={ticker} parts={sentimentParts} />
+                  <PredictionCard ticker={ticker} prediction={prediction} horizonDays={horizonDays} onHorizon={setHorizonDays} topFlows={topFlows} />
+                </div>
+              </div>
+              <KeyStatsCard company={company} callPct={callPct} convRows={convRows} />
             </div>
 
             {convRows && convRows.length > 0 && unusuality && (
@@ -432,6 +497,32 @@ export default function Dashboard() {
               </div>
             )}
             {!levels && <NewsCard ticker={ticker} company={company} callPct={callPct} />}
+
+            {gex && (() => {
+              const real = gex.greeksSource !== "estimated";
+              const sourceName = gex.greeksSource === "marketsnack" ? "MarketSnack" : "Schwab";
+              return (
+                <div
+                  title={
+                    real
+                      ? `Gamma e IV vienen de ${sourceName} (dato real de mercado).`
+                      : "Gamma e IV se estiman con Black-Scholes + anclaje a MarketSnack (sin greeks reales para este ticker)."
+                  }
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 6,
+                    fontSize: 12, fontWeight: 600, padding: "4px 10px", borderRadius: 999,
+                    background: real ? "#e6f7ea" : "#f1f3f5",
+                    color: real ? "#0a7d2c" : "#667",
+                    border: `1px solid ${real ? "#b7e4c2" : "#dde1e5"}`,
+                    width: "fit-content",
+                  }}
+                >
+                  {real
+                    ? `🔗 Greeks reales · ${sourceName}`
+                    : "≈ Greeks estimados · Black-Scholes"}
+                </div>
+              );
+            })()}
 
             {structure && <ProWallsCard ticker={ticker} structure={structure} gex={gex} horizonDays={horizonDays} levels={levels} />}
 

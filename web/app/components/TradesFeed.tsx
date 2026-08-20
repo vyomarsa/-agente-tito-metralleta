@@ -61,7 +61,7 @@ export default function TradesFeed({ rows }: { rows: UnusualRow[] }) {
               const scoreColor = score100 >= 80 ? "#d92d20" : score100 >= 60 ? "#f79009" : "#667085";
               return (
                 <div key={r.id} className="feed-row" style={{ gridTemplateColumns: GRID }}>
-                  <div style={{ fontSize: 12, color: "#667085" }}>{timeET(r.timestamp).slice(0, 5)}</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)" }}>{timeET(r.timestamp).slice(0, 5)}</div>
                   <div style={{ fontSize: 13, fontWeight: 600 }}>
                     {contractLabel(r)}
                     {r.flags.repeated && <RepeatBadge count={repeatCounts.get(repeatKey(r)) ?? 2} />}
@@ -71,7 +71,7 @@ export default function TradesFeed({ rows }: { rows: UnusualRow[] }) {
                   </div>
                   <div style={{ fontSize: 13 }}>{int.format(r.size)}</div>
                   <div style={{ fontSize: 13, fontWeight: 700 }}>{money.format(r.premium)}</div>
-                  <div style={{ fontSize: 12, color: "#667085" }}>{signalFor(r)}</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)" }}>{signalFor(r)}</div>
                   <div style={{ textAlign: "right" }}>
                     <span style={{ fontSize: 12, fontWeight: 700, color: scoreColor }}>{score100}/100</span>
                   </div>

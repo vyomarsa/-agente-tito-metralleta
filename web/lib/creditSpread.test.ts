@@ -385,6 +385,17 @@ describe("creditSpreadCandidates — filtros eliminatorios", () => {
     expect(r.candidates[0].guard!.price).toBe(97);
   });
 
+  it("realIvRank de Tastytrade MANDA sobre el proxy para la etiqueta ivRankLow", () => {
+    // IV Rank real alto (80) → NO se etiqueta ivRankLow y el candidato reporta 80.
+    const hi = creditSpreadCandidates({ ...ELIGIBLE_BASE, realIvRank: 80, quotes: [SHORT_PUT, LONG_PUT] });
+    expect(hi.candidates[0].ivRank).toBe(80);
+    expect(hi.candidates[0].ivRankLow).toBe(false);
+    // IV Rank real bajo (10) → SÍ se etiqueta ivRankLow.
+    const lo = creditSpreadCandidates({ ...ELIGIBLE_BASE, realIvRank: 10, quotes: [SHORT_PUT, LONG_PUT] });
+    expect(lo.candidates[0].ivRank).toBe(10);
+    expect(lo.candidates[0].ivRankLow).toBe(true);
+  });
+
   it("mandato completo: un put spread que cumple TODOS los filtros nuevos a la vez", () => {
     // Camino feliz integral: tendencia alcista que CONFIRMA el sesgo alcista,
     // delta corto en banda 0.10–0.15, corto fuera de 1σ, soporte guardián por

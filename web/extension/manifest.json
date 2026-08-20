@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Tito — Cookie de MarketSnack",
+  "version": "1.0.0",
+  "description": "Un clic: lee la cookie de sesion de MarketSnack (ya descifrada por el navegador, funciona CON App-Bound Encryption) y la envia al agente Tito en localhost:3000.",
+  "permissions": ["cookies"],
+  "host_permissions": [
+    "https://app.marketsnack.com/*",
+    "https://*.marketsnack.com/*",
+    "http://localhost:3000/*",
+    "http://127.0.0.1:3000/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Traer cookie de MarketSnack a Tito"
+  }
+}

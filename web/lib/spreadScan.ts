@@ -1,0 +1,117 @@
+// Escaneo de UN símbolo para venta de prima. Solo servidor.
+//
+// Existe para que haya UNA sola forma de armar la entrada de `creditSpreadCandidates`.
+// Antes este ensamblaje —cadena 4–7 DTE + spot + barras + niveles + earnings— vivía
+// dentro de `app/api/spreads/route.ts`, así que el paper trading tendría que haberlo
+// copiado. Dos copias del mismo montaje es exactamente el problema que este traslado
+// viene a cerrar: acabarían divergiendo igual que divergieron Tito y el bot Python.
+//
+// La ruta SSE de /spreads sigue siendo la dueña de la PRESENTACIÓN (sus `send()` de
+// progreso); esto solo produce el resultado.
+
+import { cachedDailyBars } from "./barsStore";
+import { fetchExpirations, fetchOptionChain2 } from "./marketsnack";
+import { dteOf, expirationsInDteWindow, normalizeChain2, type Chain2Contract } from "./optionChain2";
+import { creditSpreadCandidates, DTE_MIN, DTE_MAX, type SpreadQuote, type SpreadScan, type Bias } from "./creditSpread";
+import { earningsForTicker } from "./earnings";
+import { findLevels } from "./levels";
+import type { MacroEvent } from "./macroCalendar";
+import { fetchCompany } from "./massive";
+import type { SpreadSymbol } from "./spreadUniverse";
+import { avg20dVolume } from "./volume";
+
+export interface ScanContext {
+  now: Date;
+  macroEvents: MacroEvent[];
+  bias: Bias;
+  expert: boolean;
+  /** Cómo se traen las cotizaciones de la banda 4–7 DTE (MarketSnack o Schwab). */
+  fetchQuotes: (ticker: string, now: Date) => Promise<SpreadQuote[]>;
+}
+
+export type ScanOutcome =
+  | { ok: true; scan: SpreadScan }
+  | { ok: false; reason: string };
+
+/** Escanea un símbolo. Nunca lanza: los fallos vuelven como `ok:false` con motivo. */
+export async function scanSymbol(sym: SpreadSymbol, ctx: ScanContext): Promise<ScanOutcome> {
+  const { now, macroEvents, bias, expert, fetchQuotes } = ctx;
+  try {
+    const quotes = await fetchQuotes(sym.ticker, now);
+    if (quotes.length === 0) return { ok: false, reason: `sin cadena ${DTE_MIN}–${DTE_MAX} DTE` };
+
+    // Spot y cap salen de Massive: MarketSnack no trae precio del subyacente.
+    const company = await fetchCompany(sym.ticker).catch(() => null);
+    const spot = company?.price ?? null;
+    if (spot == null || !(spot > 0)) return { ok: false, reason: "sin precio" };
+
+    const bars = await cachedDailyBars(sym.ticker, 365, now);
+    const closes = bars.map((b) => b.close);
+
+    // El strike corto debe quedar del lado protegido de un nivel importante.
+    const levels = findLevels({ bars, spot, now });
+
+    // Earnings sobre el vencimiento más cercano de la ventana.
+    const nearExp = quotes.reduce((a, b) => (b.dte < a.dte ? b : a)).expiration;
+    const earnings = await earningsForTicker({
+      ticker: sym.ticker, expiration: nearExp, frontSkew: null, now,
+    });
+
+    return {
+      ok: true,
+      scan: creditSpreadCandidates({
+        ticker: sym.ticker,
+        sector: sym.sector,
+        bias,
+        spot,
+        isEtf: sym.isEtf ?? false,
+        marketCap: company?.marketCap ?? null,
+        avgVolume20d: avg20dVolume(bars),
+        quotes,
+        closes,
+        supports: levels.supports.map((l) => ({ price: l.price, strength: l.strength })),
+        resistances: levels.resistances.map((l) => ({ price: l.price, strength: l.strength })),
+        earnings,
+        macroEvents,
+        expert,
+      }),
+    };
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : "fallo inesperado" };
+  }
+}
+
+
+/**
+ * Chain2Contract (MarketSnack) → SpreadQuote. MarketSnack ya entrega el delta
+ * FIRMADO (call +, put −) y la IV en DECIMAL: solo se calcula el DTE.
+ */
+export function toSpreadQuote(c: Chain2Contract, now: Date): SpreadQuote {
+  return {
+    strike: c.strike,
+    type: c.type,
+    expiration: c.expiration,
+    dte: dteOf(c.expiration, now),
+    bid: c.bid,
+    ask: c.ask,
+    delta: c.delta,
+    iv: c.iv,
+    openInterest: c.openInterest,
+    volume: c.volume,
+  };
+}
+
+/**
+ * Cadenas de la banda 4–7 DTE desde MarketSnack: una llamada de vencimientos + una
+ * de cadena por fecha. El motor elige luego el weekly del frente.
+ */
+export async function fetchWindowQuotes(ticker: string, now: Date): Promise<SpreadQuote[]> {
+  const expirations = await fetchExpirations(ticker);
+  const dates = expirationsInDteWindow(expirations.map((e) => e.date), DTE_MIN, DTE_MAX, now);
+  const quotes: SpreadQuote[] = [];
+  for (const date of dates) {
+    const contracts = normalizeChain2(await fetchOptionChain2(ticker, date));
+    for (const c of contracts) quotes.push(toSpreadQuote(c, now));
+  }
+  return quotes;
+}

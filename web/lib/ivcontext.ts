@@ -11,6 +11,7 @@
 // trabaja SIEMPRE en porcentaje, que es la unidad de las tablas del documento.
 
 import type { FlowRow } from "./flow";
+import type { ChainIvSurface } from "./optionChain2";
 
 export interface IvBand {
   points: number;
@@ -109,7 +110,7 @@ export interface IvContract {
   size: number;
 }
 
-export type IvRankSource = "iv-history" | "realized-proxy" | "none";
+export type IvRankSource = "tastytrade" | "iv-history" | "realized-proxy" | "none";
 export type IvRegime = "dormida" | "compresion" | "expansion" | "normal" | "inflada" | "desconocido";
 
 export interface IvContextScore {
@@ -124,6 +125,8 @@ export interface IvContextScore {
     points: number;
     band: string;
     special: boolean;
+    /** "chain" = IV de TODA la cadena (option_chain_extended); "trades" = solo lo que operó. */
+    source: "chain" | "trades";
   };
   rank: {
     value: number | null;
@@ -148,7 +151,7 @@ export interface IvContextScore {
 
 const EMPTY: IvContextScore = {
   score: 0,
-  iv: { current: null, simpleAvg: null, min: null, max: null, contracts: 0, points: 0, band: "sin datos", special: false },
+  iv: { current: null, simpleAvg: null, min: null, max: null, contracts: 0, points: 0, band: "sin datos", special: false, source: "trades" },
   rank: { value: null, source: "none", days: 0, low: null, high: null, reference: null, points: 0, band: "sin datos" },
   byExpiration: [],
   topContracts: [],
@@ -163,21 +166,35 @@ export interface IvContextInput {
   closes: number[];
   /** Historial de IV acumulado día a día; manda sobre el proxy cuando alcanza. */
   ivHistory?: { date: string; avgIv: number }[];
+  /**
+   * IV Rank REAL de Tastytrade (0-100). Cuando viene, MANDA sobre el historial y
+   * el proxy de vol realizada: es el rank verdadero del proveedor, no una
+   * estimación. Se cablea desde `lib/tastytrade.ts` (endpoint market-metrics).
+   */
+  tastytradeIvRank?: number | null;
+  /**
+   * Superficie de IV de TODA la cadena (option_chain_extended). Si viene, la IV
+   * actual y el promedio por vencimiento salen de la cadena completa —mucho más
+   * estable que solo lo que operó hoy—. Los `topContracts` siguen siendo trades reales.
+   */
+  chainIv?: ChainIvSurface;
 }
 
 /** Días de historia propia a partir de los cuales el IV Rank real desplaza al proxy. */
 export const MIN_IV_HISTORY_DAYS = 60;
 
 export function ivContextScore(input: IvContextInput): IvContextScore {
-  const { rows, closes, ivHistory = [] } = input;
+  const { rows, closes, ivHistory = [], chainIv, tastytradeIvRank } = input;
 
   // MarketSnack manda la IV en decimal → a porcentaje.
   const withIv = rows.filter((r) => Number.isFinite(r.iv) && r.iv > 0);
-  if (withIv.length === 0) return EMPTY;
+  const usingChain = chainIv?.current != null;
+  // Sin IV de cadena NI de trades no hay nada que reportar.
+  if (withIv.length === 0 && !usingChain) return EMPTY;
   const ivPct = (r: FlowRow) => r.iv * 100;
 
-  // IV representativa = ponderada por premium. El dinero grande define el contexto;
-  // un promedio simple lo dominarían los cientos de tickets pequeños de 0DTE.
+  // IV representativa de los trades = ponderada por premium. El dinero grande
+  // define el contexto; un promedio simple lo dominarían los tickets de 0DTE.
   let wSum = 0, wIv = 0, plain = 0, min = Infinity, max = -Infinity;
   for (const r of withIv) {
     const v = ivPct(r);
@@ -186,29 +203,46 @@ export function ivContextScore(input: IvContextInput): IvContextScore {
     if (v < min) min = v;
     if (v > max) max = v;
   }
-  const current = wIv / wSum;
+  const tradeCurrent = wSum > 0 ? wIv / wSum : null;
+
+  // La IV actual: la de TODA la cadena si viene (más estable), si no la de trades.
+  const current = (usingChain ? chainIv!.current! : tradeCurrent) as number;
   const iv = ivPoints(current);
+  const ivSource: "chain" | "trades" = usingChain ? "chain" : "trades";
 
   // --- promedio de IV por vencimiento (lo que pide el documento) ---
-  const byExpMap = new Map<string, { dte: number | null; ivs: number[]; premium: number }>();
-  for (const r of withIv) {
-    if (!r.expiration) continue;
-    const e = byExpMap.get(r.expiration) ?? { dte: r.dte, ivs: [], premium: 0 };
-    e.ivs.push(ivPct(r));
-    e.premium += r.premium;
-    if (e.dte == null) e.dte = r.dte;
-    byExpMap.set(r.expiration, e);
-  }
-  const byExpiration: IvExpirationStat[] = [...byExpMap.entries()]
-    .map(([expiration, e]) => ({
-      expiration,
+  // De la cadena completa si la tenemos; si no, de los trades del flujo.
+  let byExpiration: IvExpirationStat[];
+  if (usingChain && chainIv!.byExpiration.length > 0) {
+    byExpiration = chainIv!.byExpiration.map((e) => ({
+      expiration: e.expiration,
       dte: e.dte,
-      trades: e.ivs.length,
-      avgIv: e.ivs.reduce((s, v) => s + v, 0) / e.ivs.length,
-      maxIv: Math.max(...e.ivs),
+      trades: e.contracts,
+      avgIv: e.avgIv,
+      maxIv: e.maxIv,
       premium: e.premium,
-    }))
-    .sort((a, b) => (a.dte ?? 1e9) - (b.dte ?? 1e9));
+    }));
+  } else {
+    const byExpMap = new Map<string, { dte: number | null; ivs: number[]; premium: number }>();
+    for (const r of withIv) {
+      if (!r.expiration) continue;
+      const e = byExpMap.get(r.expiration) ?? { dte: r.dte, ivs: [], premium: 0 };
+      e.ivs.push(ivPct(r));
+      e.premium += r.premium;
+      if (e.dte == null) e.dte = r.dte;
+      byExpMap.set(r.expiration, e);
+    }
+    byExpiration = [...byExpMap.entries()]
+      .map(([expiration, e]) => ({
+        expiration,
+        dte: e.dte,
+        trades: e.ivs.length,
+        avgIv: e.ivs.reduce((s, v) => s + v, 0) / e.ivs.length,
+        maxIv: Math.max(...e.ivs),
+        premium: e.premium,
+      }))
+      .sort((a, b) => (a.dte ?? 1e9) - (b.dte ?? 1e9));
+  }
 
   // Skew del frente: si el vencimiento más cercano cotiza muy por encima del
   // resto, el mercado está pagando por un evento inminente.
@@ -234,7 +268,16 @@ export function ivContextScore(input: IvContextInput): IvContextScore {
   let days = 0, low: number | null = null, high: number | null = null;
   let reference: number | null = null;
 
-  if (ivHistory.length >= MIN_IV_HISTORY_DAYS) {
+  // Prioridad 1: IV Rank REAL de Tastytrade (cuando está cableado). Es el rank
+  // verdadero del proveedor, así que desplaza al historial propio y al proxy.
+  if (tastytradeIvRank != null && Number.isFinite(tastytradeIvRank) && tastytradeIvRank >= 0) {
+    rankValue = Math.max(0, Math.min(100, tastytradeIvRank));
+    source = "tastytrade";
+    days = 0;            // Tastytrade da el rank directo, no una serie propia
+    reference = current; // la IV mostrada como referencia sigue siendo la actual
+  }
+  // Prioridad 2: historia propia acumulada (≥60 días).
+  if (rankValue == null && ivHistory.length >= MIN_IV_HISTORY_DAYS) {
     const series = ivHistory.map((h) => h.avgIv).filter((v) => Number.isFinite(v) && v > 0);
     rankValue = rankWithin(series, current);
     if (rankValue != null) {
@@ -242,6 +285,7 @@ export function ivContextScore(input: IvContextInput): IvContextScore {
       low = Math.min(...series); high = Math.max(...series); reference = current;
     }
   }
+  // Prioridad 3: proxy de volatilidad realizada.
   if (rankValue == null) {
     const rv = realizedVolSeries(closes);
     if (rv.length >= 2) {
@@ -287,13 +331,14 @@ export function ivContextScore(input: IvContextInput): IvContextScore {
     score: Math.round((iv.points + rank.points) / 2),
     iv: {
       current,
-      simpleAvg: plain / withIv.length,
+      simpleAvg: withIv.length > 0 ? plain / withIv.length : null,
       min: min === Infinity ? null : min,
       max: max === -Infinity ? null : max,
       contracts: withIv.length,
       points: iv.points,
       band: iv.band,
       special: Boolean(iv.special),
+      source: ivSource,
     },
     rank: {
       value: rankValue, source, days, low, high, reference,

@@ -5,6 +5,7 @@ import type { TfBar } from "@/lib/types";
 import type { LevelsReport } from "@/lib/levels";
 import { conePoints, predictionPath } from "@/lib/expectedMove";
 import PriceChart, { type ChartSeries, type ChartTarget } from "./chart/PriceChart";
+import { useTheme } from "./useTheme";
 
 export interface Scenarios { bear: number; base: number; bull: number }
 
@@ -62,6 +63,7 @@ export default function SimpleChart({
   levels: LevelsReport | null;
 }) {
   const [bars, setBars] = useState<TfBar[] | null>(null);
+  const theme = useTheme();
 
   useEffect(() => {
     let cancelled = false;
@@ -131,7 +133,7 @@ export default function SimpleChart({
             series={series}
             targets={targets}
             levels={nearLevels}
-            theme="light"
+            theme={theme}
             height="100%"
             animate
           />

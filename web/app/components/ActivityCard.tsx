@@ -45,7 +45,7 @@ export default function ActivityCard({ rows, unusualCount }: { rows: FlowRow[]; 
             rojo = a que baja (puts).
           </div>
         </div>
-        <div style={{ display: "flex", gap: 14, fontSize: 12, color: "#667085", whiteSpace: "nowrap" }}>
+        <div style={{ display: "flex", gap: 14, fontSize: 12, color: "var(--muted)", whiteSpace: "nowrap" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}><span className="legend-dot" style={{ background: "#12b76a" }} />Calls</div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}><span className="legend-dot" style={{ background: "#f97066" }} />Puts</div>
         </div>

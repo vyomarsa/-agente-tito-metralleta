@@ -8,6 +8,7 @@ import { fetchWheelChain } from "@/lib/massive";
 import { cachedDailyBars } from "@/lib/barsStore";
 import { findLevels, type LvlBar } from "@/lib/levels";
 import { realizedVolSeries, rankWithin } from "@/lib/ivcontext";
+import { fetchIvRankMap } from "@/lib/tastytrade";
 import { earningsForTicker } from "@/lib/earnings";
 import {
   WHEEL_PRESETS, wheelCandidates,
@@ -59,6 +60,13 @@ export async function GET(req: Request) {
       try {
         send({ type: "step", label: `Escaneando ${WHEEL_UNIVERSE.length} tickers · preset ${preset.label}` });
 
+        // IV Rank REAL de Tastytrade para todo el universo en una tanda. Vacío si
+        // no está configurado → cada ticker cae a su proxy de vol realizada.
+        const ivRankMap = await fetchIvRankMap(WHEEL_UNIVERSE.map((s) => s.ticker));
+        if (ivRankMap.size > 0) {
+          send({ type: "step", label: `IV Rank real de Tastytrade para ${ivRankMap.size} tickers` });
+        }
+
         await mapLimit(WHEEL_UNIVERSE, CONCURRENCY, async (sym) => {
           try {
             const chain = await fetchWheelChain(sym.ticker, {
@@ -74,10 +82,11 @@ export async function GET(req: Request) {
             const lvlBars: LvlBar[] = bars.map((b) => ({ time: b.time, high: b.high, low: b.low, close: b.close }));
             const levels = findLevels({ bars: lvlBars, spot: chain.spot, now });
 
-            // IV Rank propio: proxy de volatilidad realizada (no hay serie de IV).
+            // IV Rank: el REAL de Tastytrade si está; si no, el proxy de vol realizada.
             const rvSeries = realizedVolSeries(bars.map((b) => b.close), 30);
             const currentRv = rvSeries.length > 0 ? rvSeries[rvSeries.length - 1] : null;
-            const ivRank = currentRv != null ? rankWithin(rvSeries, currentRv) : null;
+            const proxyRank = currentRv != null ? rankWithin(rvSeries, currentRv) : null;
+            const ivRank = ivRankMap.get(sym.ticker) ?? proxyRank;
 
             // Earnings sobre el vencimiento más cercano de la ventana.
             // frontSkew: null a propósito — este escaneo Wheel no computa

@@ -9,6 +9,11 @@
 //  · la gamma se calcula con Black-Scholes por contrato
 //  · donde hay gamma real de MarketSnack, se ancla la estimada contra la real
 //
+// TERCERA FUENTE (Schwab): si se pasa `schwabGreeks` (gamma + IV REALES por
+// contrato, ver lib/schwab.ts), esos valores SUSTITUYEN la estimación —no se
+// anclan, se usan tal cual— porque son el dato de mercado, no un proxy. La IV
+// de Schwab llega en DECIMAL (0.32), no en % (se convierte al construir el mapa).
+//
 // Funciones puras y testeables (lib/gex.test.ts). Términos neutros a propósito.
 // ============================================================================
 
@@ -37,6 +42,21 @@ export interface TradeLite {
   gamma: number;
 }
 
+/** Greek real por contrato desde Schwab. `iv` en DECIMAL (0.32), no en %. */
+export interface SchwabGreek {
+  gamma?: number;
+  iv?: number;
+}
+
+/** Clave del override de Schwab: `${strike}|${expiration}|${type}`. */
+export function schwabKey(
+  strike: number,
+  expiration: string,
+  type: "call" | "put",
+): string {
+  return `${strike}|${expiration}|${type}`;
+}
+
 export interface GexNode {
   strike: number;
   netGex: number;       // callGex − putGex (signo = lado dominante)
@@ -60,6 +80,8 @@ export interface GexAnalysis {
   confidence: number;               // 0-100
   lowLiquidity: boolean;
   n: number;                        // strikes considerados cerca del spot
+  /** De dónde salieron gamma/IV: "marketsnack"/"schwab" = reales, "estimated" = Black-Scholes. */
+  greeksSource: "marketsnack" | "schwab" | "estimated";
 }
 
 /**
@@ -86,12 +108,24 @@ export interface GexInput {
   structureScore?: number | null;  // 0-10
   lowLiquidity?: boolean;
   now: Date;
+  /**
+   * Greeks REALES por contrato (`schwabKey`), de MarketSnack o Schwab. Si faltan,
+   * se estiman con Black-Scholes.
+   */
+  schwabGreeks?: Map<string, SchwabGreek>;
+  /** Etiqueta de origen de los greeks reales para el reporte (default "schwab"). */
+  greeksSource?: "marketsnack" | "schwab";
 }
 
-const emptyAnalysis = (spot: number, iv: number, lowLiquidity: boolean): GexAnalysis => ({
+const emptyAnalysis = (
+  spot: number,
+  iv: number,
+  lowLiquidity: boolean,
+  greeksSource: "marketsnack" | "schwab" | "estimated" = "estimated",
+): GexAnalysis => ({
   spot, iv, nodes: [], kingStrike: null, flipStrike: null,
   regime: "positive", totalNetGex: 0, direction: null, confidence: 0,
-  lowLiquidity, n: 0,
+  lowLiquidity, n: 0, greeksSource,
 });
 
 /**
@@ -100,10 +134,31 @@ const emptyAnalysis = (spot: number, iv: number, lowLiquidity: boolean): GexAnal
  * (imán), zona de inversión gamma, régimen, dirección y confianza.
  */
 export function gexAnalysis(input: GexInput): GexAnalysis {
-  const { rows, closes, spot, trades = [], convictionScore, structureScore, now } = input;
-  const iv = estimateIV(closes);
+  const { rows, closes, spot, trades = [], convictionScore, structureScore, now, schwabGreeks } = input;
+  const realSourceLabel: "marketsnack" | "schwab" = input.greeksSource ?? "schwab";
+  const estIv = estimateIV(closes);
   const lowLiquidity = input.lowLiquidity ?? false;
-  if (spot <= 0 || rows.length === 0) return emptyAnalysis(spot, iv, lowLiquidity);
+
+  const lo = spot * (1 - NEAR_SPOT_PCT);
+  const hi = spot * (1 + NEAR_SPOT_PCT);
+
+  // ── IV representativa: si Schwab trae IV real por contrato, se promedia la de
+  //    los strikes cerca del spot (ATM); si no, la estimada por vol realizada. ──
+  let iv = estIv;
+  let usedSchwab = false;
+  if (schwabGreeks && schwabGreeks.size > 0) {
+    let ivSum = 0, ivN = 0;
+    for (const r of rows) {
+      if (r.strike < lo || r.strike > hi) continue;
+      const g = schwabGreeks.get(schwabKey(r.strike, r.expiration, r.contractType));
+      if (g?.iv != null && g.iv > 0) { ivSum += g.iv; ivN += 1; }
+    }
+    if (ivN > 0) { iv = ivSum / ivN; usedSchwab = true; }
+  }
+  const greeksSource: "marketsnack" | "schwab" | "estimated" =
+    usedSchwab ? realSourceLabel : "estimated";
+
+  if (spot <= 0 || rows.length === 0) return emptyAnalysis(spot, iv, lowLiquidity, greeksSource);
 
   // ── Gamma real por strike+lado (promedio) desde los trades, para anclar ──
   const realGamma = new Map<string, { sum: number; n: number }>();
@@ -120,8 +175,6 @@ export function gexAnalysis(input: GexInput): GexAnalysis {
   }
 
   // ── GEX por strike sobre toda la cadena (solo contratos vigentes) ──
-  const lo = spot * (1 - NEAR_SPOT_PCT);
-  const hi = spot * (1 + NEAR_SPOT_PCT);
   const byStrike = new Map<number, { callGex: number; putGex: number }>();
 
   for (const r of rows) {
@@ -131,9 +184,17 @@ export function gexAnalysis(input: GexInput): GexAnalysis {
     if (dte <= 0) continue;
     const T = dte / 365;
 
-    let gamma = bsGamma(spot, r.strike, T, iv);
-    const anchor = realGamma.get(`${r.strike}|${r.contractType}`);
-    if (anchor && anchor.n > 0) gamma = (gamma + anchor.sum / anchor.n) / 2;
+    // 1º Schwab (gamma real de mercado) → 2º Black-Scholes anclado a MarketSnack.
+    const sg = schwabGreeks?.get(schwabKey(r.strike, r.expiration, r.contractType));
+    let gamma: number;
+    if (sg?.gamma != null && sg.gamma > 0) {
+      gamma = sg.gamma;
+    } else {
+      const contractIv = sg?.iv != null && sg.iv > 0 ? sg.iv : iv;
+      gamma = bsGamma(spot, r.strike, T, contractIv);
+      const anchor = realGamma.get(`${r.strike}|${r.contractType}`);
+      if (anchor && anchor.n > 0) gamma = (gamma + anchor.sum / anchor.n) / 2;
+    }
 
     const gex = gamma * r.openInterest * 100 * spot * spot * 0.01;
     const s = byStrike.get(r.strike) ?? { callGex: 0, putGex: 0 };
@@ -142,7 +203,7 @@ export function gexAnalysis(input: GexInput): GexAnalysis {
     byStrike.set(r.strike, s);
   }
 
-  if (byStrike.size === 0) return emptyAnalysis(spot, iv, lowLiquidity);
+  if (byStrike.size === 0) return emptyAnalysis(spot, iv, lowLiquidity, greeksSource);
 
   // ── Nodos + concentración de dinero (GEX + actividad real) ──
   const raw = [...byStrike.entries()].map(([strike, g]) => {
@@ -207,6 +268,6 @@ export function gexAnalysis(input: GexInput): GexAnalysis {
 
   return {
     spot, iv, nodes, kingStrike, flipStrike, regime, totalNetGex,
-    direction, confidence, lowLiquidity, n: byStrike.size,
+    direction, confidence, lowLiquidity, n: byStrike.size, greeksSource,
   };
 }

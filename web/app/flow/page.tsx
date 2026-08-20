@@ -2,7 +2,8 @@
 
 import { useRef, useState } from "react";
 import type { AggressionScore, FlowRow } from "@/lib/flow";
-import NavTabs from "@/app/components/NavTabs";
+import type { IvContextScore } from "@/lib/ivcontext";
+import IvContextCard from "@/app/components/IvContextCard";
 
 interface StepLine { label: string; detail?: string }
 interface FlowMeta {
@@ -11,7 +12,7 @@ interface FlowMeta {
 }
 type FlowEvent =
   | { type: "step"; label: string; detail?: string }
-  | { type: "done"; rows: FlowRow[]; score: AggressionScore; meta: FlowMeta }
+  | { type: "done"; rows: FlowRow[]; score: AggressionScore; meta: FlowMeta; ivContext: IvContextScore | null }
   | { type: "error"; message: string };
 
 const int = new Intl.NumberFormat("en-US");
@@ -86,6 +87,7 @@ export default function FlowPage() {
   const [rows, setRows] = useState<FlowRow[] | null>(null);
   const [score, setScore] = useState<AggressionScore | null>(null);
   const [meta, setMeta] = useState<FlowMeta | null>(null);
+  const [ivContext, setIvContext] = useState<IvContextScore | null>(null);
   const [error, setError] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
@@ -95,14 +97,14 @@ export default function FlowPage() {
     if (!t || loading) return;
     esRef.current?.close();
     setLoading(true);
-    setSteps([]); setRows(null); setScore(null); setMeta(null); setError(null);
+    setSteps([]); setRows(null); setScore(null); setMeta(null); setIvContext(null); setError(null);
 
     const es = new EventSource(`/api/flow?ticker=${encodeURIComponent(t)}`);
     esRef.current = es;
     es.onmessage = (ev) => {
       const data = JSON.parse(ev.data) as FlowEvent;
       if (data.type === "step") setSteps((p) => [...p, { label: data.label, detail: data.detail }]);
-      else if (data.type === "done") { setRows(data.rows); setScore(data.score); setMeta(data.meta); setLoading(false); es.close(); }
+      else if (data.type === "done") { setRows(data.rows); setScore(data.score); setMeta(data.meta); setIvContext(data.ivContext ?? null); setLoading(false); es.close(); }
       else if (data.type === "error") { setError(data.message); setLoading(false); es.close(); }
     };
     es.onerror = () => { setLoading(false); es.close(); };
@@ -111,7 +113,6 @@ export default function FlowPage() {
   return (
     <main className="wrap">
       <div className="header">
-        <NavTabs standalone />
         <h1>Agresividad · Time &amp; Sales</h1>
         <p>Transacciones notables y score de agresividad (bid/ask) para el scorecard.</p>
       </div>
@@ -140,6 +141,8 @@ export default function FlowPage() {
       {error && <div className="error">⚠ {error}</div>}
 
       {score && <ScoreCard score={score} />}
+
+      {ivContext && <IvContextCard s={ivContext} />}
 
       {rows && meta && (
         <>

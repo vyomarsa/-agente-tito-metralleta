@@ -1,8 +1,11 @@
 // Cliente del API interno de MarketSnack (app.marketsnack.com). Solo servidor.
-// Auth por cookie de sesión (MARKETSNACK_COOKIE en .env.local). Ver SCOREDCARD/Scoredcard.md.
+// Auth por cookie de sesión. La cookie se lee EN CADA PETICIÓN desde el almacén
+// (lib/marketsnackCookie.ts): data/marketsnack-cookie.json → respaldo .env.local.
+// Renovarla en /ajustes surte efecto sin reiniciar. Ver SCOREDCARD/Scoredcard.md.
 
 import type { RawTrade } from "./flow";
 import type { Chain2RawContract } from "./optionChain2";
+import { getCookie } from "./marketsnackCookie";
 
 const BASE_URL = "https://app.marketsnack.com";
 
@@ -15,14 +18,15 @@ export class MarketSnackError extends Error {
   }
 }
 
-function cookie(): string {
-  const c = process.env.MARKETSNACK_COOKIE;
-  if (!c || !c.trim()) {
+/** Cookie activa desde el almacén (archivo o .env.local). Async: se lee por petición. */
+async function cookie(): Promise<string> {
+  try {
+    return await getCookie();
+  } catch (e) {
     throw new MarketSnackError(
-      "Falta MARKETSNACK_COOKIE en .env.local. Copia tu cookie de sesión de app.marketsnack.com.",
+      e instanceof Error ? e.message : "Falta la cookie de MarketSnack.",
     );
   }
-  return c.trim();
 }
 
 export interface FetchFlowOptions {
@@ -75,7 +79,7 @@ export interface ExpirationEntry {
 export async function fetchExpirations(ticker: string): Promise<ExpirationEntry[]> {
   const clean = ticker.trim().toUpperCase();
   if (!clean) throw new MarketSnackError("Ticker vacío.");
-  const cookieHeader = cookie();
+  const cookieHeader = await cookie();
   const url = `${BASE_URL}/api/assets/${encodeURIComponent(clean)}/expirations`;
 
   const res = await fetch(url, {
@@ -121,7 +125,7 @@ export async function fetchOptionChain2(
   if (!/^\d{4}-\d{2}-\d{2}$/.test(expirationDate)) {
     throw new MarketSnackError(`expiration_date inválida: ${expirationDate}. Usa YYYY-MM-DD.`);
   }
-  const cookieHeader = cookie();
+  const cookieHeader = await cookie();
   const params = new URLSearchParams({ expiration_date: expirationDate });
   const url = `${BASE_URL}/api/assets/${encodeURIComponent(clean)}/option_chain_extended?${params.toString()}`;
 
@@ -162,7 +166,7 @@ async function paginate(
   const clean = symbol;
   const period = opts.period ?? "5d";
   const maxPages = opts.maxPages ?? 10;
-  const cookieHeader = cookie();
+  const cookieHeader = await cookie();
 
   const trades: RawTrade[] = [];
   let token: string | null = null;

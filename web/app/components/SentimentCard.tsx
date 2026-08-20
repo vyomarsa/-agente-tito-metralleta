@@ -50,12 +50,12 @@ export default function SentimentCard({ ticker, parts }: { ticker: string; parts
             <div style={{ borderRadius: "2px 6px 6px 2px", background: "#32d583" }} />
           </div>
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#667085", marginTop: 6 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
           <div>Bearish</div><div>Neutral</div><div>Bullish</div>
         </div>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 12, borderTop: "1px solid #f2f4f7", paddingTop: 16 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
         <div className="sent-head-label">Desglose por señal (promedios de cada sub-agente)</div>
         {parts.map((p) => {
           const s100 = p.score != null ? p.score * 10 : null;

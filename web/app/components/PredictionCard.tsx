@@ -6,15 +6,15 @@ import type { FlowRow } from "@/lib/flow";
 import { money, px } from "../format";
 
 const KIND: Record<Scenario["kind"], { label: string; color: string; bg: string }> = {
-  bear: { label: "Bear case", color: "#d92d20", bg: "#fef3f2" },
-  base: { label: "Base case", color: "#101828", bg: "#f8f9fb" },
-  bull: { label: "Bull case", color: "#027a48", bg: "#f6fef9" },
+  bear: { label: "Bear case", color: "var(--red-strong)", bg: "var(--red-bg)" },
+  base: { label: "Base case", color: "var(--text)", bg: "var(--panel-2)" },
+  bull: { label: "Bull case", color: "var(--green-strong)", bg: "var(--green-bg)" },
 };
 
 function ScenarioBox({ s }: { s: Scenario }) {
   const k = KIND[s.kind];
   return (
-    <div className="sc-box" style={{ background: k.bg, borderColor: `${k.color}22` }}>
+    <div className="sc-box" style={{ background: k.bg, borderColor: "var(--border)" }}>
       <div className="sc-head" style={{ color: k.color }}>{k.label}</div>
       <div className="sc-target" style={{ color: k.color }}>${px.format(s.target)}</div>
       <div className="sc-chg" style={{ color: k.color }}>

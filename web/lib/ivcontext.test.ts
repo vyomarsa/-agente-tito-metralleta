@@ -213,6 +213,24 @@ describe("ivContextScore", () => {
     expect(s.rank.value!).toBeCloseTo(50.8, 1);
   });
 
+  it("el IV Rank REAL de Tastytrade manda sobre el historial y el proxy", () => {
+    // Hay 60 días de historia (que normalmente ganaría), pero Tastytrade la desplaza.
+    const ivHistory = Array.from({ length: 60 }, (_, i) => ({ date: `d${i}`, avgIv: 30 + i }));
+    const s = ivContextScore({ rows: [row({ iv: 0.60 })], closes, ivHistory, tastytradeIvRank: 22 });
+    expect(s.rank.source).toBe("tastytrade");
+    expect(s.rank.value).toBe(22);
+    // 22 cae en la banda 16-30 (comprimida) → 10 pts.
+    expect(s.rank.points).toBe(10);
+    expect(s.regime).toBe("compresion");
+  });
+
+  it("Tastytrade se recorta a 0-100 y con null NO afecta (cae al proxy)", () => {
+    const over = ivContextScore({ rows: [row({ iv: 0.5 })], closes, tastytradeIvRank: 150 });
+    expect(over.rank.value).toBe(100);
+    const nul = ivContextScore({ rows: [row({ iv: 0.5 })], closes, tastytradeIvRank: null });
+    expect(nul.rank.source).toBe("realized-proxy");
+  });
+
   it("con poca historia de IV se queda con el proxy", () => {
     const ivHistory = Array.from({ length: 10 }, (_, i) => ({ date: `d${i}`, avgIv: 40 + i }));
     const s = ivContextScore({ rows: [row({ iv: 0.5 })], closes, ivHistory });
@@ -239,5 +257,50 @@ describe("ivContextScore", () => {
       expect(s.score).toBeGreaterThanOrEqual(0);
       expect(s.score).toBeLessThanOrEqual(10);
     }
+  });
+
+  describe("IV de la cadena completa (chainIv)", () => {
+    const chainIv = {
+      current: 47.0, // % — de TODA la cadena
+      byExpiration: [
+        { expiration: "2026-07-31", dte: 4, contracts: 120, avgIv: 46, maxIv: 88, premium: 5_000_000 },
+        { expiration: "2026-08-21", dte: 25, contracts: 200, avgIv: 42, maxIv: 70, premium: 9_000_000 },
+      ],
+    };
+
+    it("cuando viene chainIv, la IV actual y byExpiration salen de la cadena, no de los trades", () => {
+      const s = ivContextScore({
+        rows: [row({ iv: 0.90, premium: 5_000_000 })], // el trade diría 90%
+        closes,
+        chainIv,
+      });
+      expect(s.iv.source).toBe("chain");
+      expect(s.iv.current).toBeCloseTo(47, 6); // manda la cadena, no el 90% del trade
+      expect(s.iv.points).toBe(10); // 40-60% — la zona buena
+      expect(s.byExpiration).toHaveLength(2);
+      expect(s.byExpiration[0].expiration).toBe("2026-07-31");
+      // los topContracts siguen siendo los trades reales
+      expect(s.topContracts).toHaveLength(1);
+      expect(s.topContracts[0].iv).toBeCloseTo(90, 6);
+    });
+
+    it("produce reporte aun sin trades, si hay IV de cadena", () => {
+      const s = ivContextScore({ rows: [], closes, chainIv });
+      expect(s.iv.source).toBe("chain");
+      expect(s.iv.current).toBeCloseTo(47, 6);
+      expect(s.iv.contracts).toBe(0); // no hubo trades
+      expect(s.iv.simpleAvg).toBeNull();
+      expect(s.topContracts).toEqual([]);
+    });
+
+    it("sin chainIv usable cae a los trades (comportamiento previo)", () => {
+      const s = ivContextScore({
+        rows: [row({ iv: 0.50 })],
+        closes,
+        chainIv: { current: null, byExpiration: [] },
+      });
+      expect(s.iv.source).toBe("trades");
+      expect(s.iv.current).toBeCloseTo(50, 1);
+    });
   });
 });

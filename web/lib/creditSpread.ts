@@ -393,6 +393,11 @@ export interface CreditSpreadInput {
   quotes: SpreadQuote[];
   /** Cierres diarios del subyacente (≈1 año) para tendencia + IV Rank proxy. */
   closes: number[];
+  /**
+   * IV Rank REAL de Tastytrade (0-100). Si viene, MANDA sobre el proxy de vol
+   * realizada para la etiqueta `ivRankLow`. null/undefined → se usa el proxy.
+   */
+  realIvRank?: number | null;
   /** Soportes (findLevels), para respaldar el strike corto de los put spreads. */
   supports: SpreadLevel[];
   /** Resistencias (findLevels), para respaldar el strike corto de los call spreads. */
@@ -742,7 +747,8 @@ export function creditSpreadCandidates(input: CreditSpreadInput): SpreadScan {
 
   // Estructuras (selección de patas + crédito + 1σ + soporte/resistencia + liquidez).
   const chainIvFallback = atmIv(window, input.spot);
-  const ivRank = ivRankProxy(input.closes);
+  // IV Rank: el REAL de Tastytrade si viene; si no, el proxy de vol realizada.
+  const ivRank = input.realIvRank ?? ivRankProxy(input.closes);
   const out: SpreadCandidate[] = [];
   for (const type of allowed) {
     // Candidatos de pata corta: del tipo, en banda 0.10–0.15, ordenados por delta

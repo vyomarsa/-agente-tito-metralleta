@@ -76,6 +76,8 @@ export interface HeatmapInput {
   strikeRadius?: number;
   /** Cuántos vencimientos (los más cercanos). */
   maxExpirations?: number;
+  /** Greeks REALES de Schwab por contrato (`${strike}|${expiration}|${type}`). */
+  schwabGreeks?: Map<string, { gamma?: number; iv?: number }>;
 }
 
 function dteOf(expiration: string, now: Date): number {
@@ -84,7 +86,7 @@ function dteOf(expiration: string, now: Date): number {
 }
 
 export function gexHeatmap(input: HeatmapInput): GexHeatmap {
-  const { rows, spot, iv, trades = [], now, strikeRadius = 18, maxExpirations = 8 } = input;
+  const { rows, spot, iv, trades = [], now, strikeRadius = 18, maxExpirations = 8, schwabGreeks } = input;
   if (!(spot > 0) || rows.length === 0) return EMPTY;
 
   // Gamma real de MarketSnack por (strike, vencimiento) para anclar la estimación.
@@ -127,9 +129,17 @@ export function gexHeatmap(input: HeatmapInput): GexHeatmap {
 
     const dte = dteOf(r.expiration, now);
     const T = Math.max(dte, 1) / 365;
-    let gamma = bsGamma(spot, r.strike, T, iv);
-    const anchor = realGamma.get(`${r.strike}|${r.expiration}`);
-    if (anchor && anchor.n > 0) gamma = (gamma + anchor.sum / anchor.n) / 2;
+    // 1º Schwab (gamma real de mercado) → 2º Black-Scholes anclado a MarketSnack.
+    const sg = schwabGreeks?.get(`${r.strike}|${r.expiration}|${r.contractType}`);
+    let gamma: number;
+    if (sg?.gamma != null && sg.gamma > 0) {
+      gamma = sg.gamma;
+    } else {
+      const contractIv = sg?.iv != null && sg.iv > 0 ? sg.iv : iv;
+      gamma = bsGamma(spot, r.strike, T, contractIv);
+      const anchor = realGamma.get(`${r.strike}|${r.expiration}`);
+      if (anchor && anchor.n > 0) gamma = (gamma + anchor.sum / anchor.n) / 2;
+    }
 
     // GEX = Γ · OI · 100 · S² · 0.01 — dólares por 1% de movimiento.
     const gex = gamma * r.openInterest * 100 * spot * spot * 0.01;

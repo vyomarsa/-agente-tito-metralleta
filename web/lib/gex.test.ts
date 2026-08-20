@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bsGamma, estimateIV, gexAnalysis, FALLBACK_IV, type GexInput } from "./gex";
+import { bsGamma, estimateIV, gexAnalysis, schwabKey, FALLBACK_IV, type GexInput } from "./gex";
 import type { Row } from "./types";
 
 // now fijo para DTE determinista.
@@ -127,5 +127,44 @@ describe("gexAnalysis", () => {
     });
     expect(a.confidence).toBeGreaterThanOrEqual(0);
     expect(a.confidence).toBeLessThanOrEqual(100);
+  });
+
+  it("sin Schwab, la fuente de greeks es 'estimated'", () => {
+    const a = analyze([row(100, "call", 5000)]);
+    expect(a.greeksSource).toBe("estimated");
+    // la IV cae en la estimada por vol realizada
+    expect(a.iv).toBe(estimateIV(closes));
+  });
+
+  it("con Schwab, usa la IV real y marca la fuente 'schwab'", () => {
+    const greeks = new Map([
+      [schwabKey(100, "2026-08-21", "call"), { gamma: 0.05, iv: 0.9 }],
+    ]);
+    const a = analyze([row(100, "call", 5000)], { schwabGreeks: greeks });
+    expect(a.greeksSource).toBe("schwab");
+    // la IV representativa es la de Schwab (0.9), no la estimada
+    expect(a.iv).toBeCloseTo(0.9, 6);
+  });
+
+  it("la gamma real de Schwab sustituye a la Black-Scholes en el GEX", () => {
+    const rows = [row(100, "call", 5000)];
+    const base = analyze(rows);
+    // gamma real mucho mayor que la estimada → |GEX neto| mayor
+    const big = new Map([
+      [schwabKey(100, "2026-08-21", "call"), { gamma: 0.5, iv: 0.4 }],
+    ]);
+    const withSchwab = analyze(rows, { schwabGreeks: big });
+    expect(Math.abs(withSchwab.totalNetGex)).toBeGreaterThan(Math.abs(base.totalNetGex));
+  });
+
+  it("un contrato sin entrada en Schwab cae a la estimación (no rompe)", () => {
+    // greeks solo para el call; el put no está → se estima como siempre
+    const greeks = new Map([
+      [schwabKey(100, "2026-08-21", "call"), { gamma: 0.05, iv: 0.5 }],
+    ]);
+    const a = analyze([row(100, "call", 5000), row(95, "put", 3000)], {
+      schwabGreeks: greeks,
+    });
+    expect(a.nodes.map((n) => n.strike).sort((x, y) => x - y)).toEqual([95, 100]);
   });
 });

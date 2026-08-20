@@ -57,19 +57,19 @@ export default function MoneyFlowCard({
       label: "Ratio Put/Call",
       value: pcRatio.toFixed(2),
       sub: pcRatio < 0.7 ? "Alcista (< 0.7)" : pcRatio > 1 ? "Bajista (> 1.0)" : "Equilibrado",
-      color: pcRatio < 0.7 ? "#12b76a" : pcRatio > 1 ? "#f04438" : "#101828",
+      color: pcRatio < 0.7 ? "#12b76a" : pcRatio > 1 ? "#f04438" : "var(--text)",
     },
     conviction && {
       label: "Spread promedio",
       value: conviction.spread.avgPct != null ? `${conviction.spread.avgPct.toFixed(2)}%` : "—",
       sub: conviction.spread.avgPct != null && conviction.spread.avgPct < 2 ? "Muy líquido" : "Liquidez media",
-      color: "#101828",
+      color: "var(--text)",
     },
     structure && {
       label: "Volumen > Open Interest",
       value: `${structure.volOI.pct.toFixed(0)}%`,
       sub: "Posiciones nuevas abriéndose",
-      color: structure.volOI.pct >= 50 ? "#12b76a" : "#101828",
+      color: structure.volOI.pct >= 50 ? "#12b76a" : "var(--text)",
     },
   ].filter(Boolean) as { label: string; value: string; sub: string; color: string }[];
 

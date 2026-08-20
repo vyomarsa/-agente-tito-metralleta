@@ -2,11 +2,18 @@
 // Lean: filtra duro a transacciones notables, tabla chica + score 0-10. No trae el tape completo.
 
 import { aggressionScore, classifyFlow, convictionScore, unusualityScore, type FlowRow } from "@/lib/flow";
-import { fetchFlow, MarketSnackError } from "@/lib/marketsnack";
+import { fetchFlow, fetchExpirations, fetchOptionChain2, MarketSnackError } from "@/lib/marketsnack";
+import {
+  normalizeChain2,
+  nearestExpirations,
+  chainIvSurface,
+  type ChainIvSurface,
+} from "@/lib/optionChain2";
 import { saveTrades } from "@/lib/store";
 import { ivContextScore, type IvContextScore } from "@/lib/ivcontext";
 import { loadIvHistory, saveIvSnapshot } from "@/lib/ivStore";
 import { fetchDailyBars } from "@/lib/massive";
+import { fetchMarketMetrics, tastytradeConfigured } from "@/lib/tastytrade";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +28,31 @@ const CONVICTION_DAYS = 30;
 const CONVICTION_MIN_PREMIUM = 1_000_000;
 const CONVICTION_MAX_PAGES = 15;
 const CONVICTION_TABLE_CAP = 150;
+
+// Contexto IV: cuántos vencimientos cercanos de la cadena completa se leen para la
+// superficie de IV (option_chain_extended). Acota las llamadas a MarketSnack.
+const IV_CHAIN_EXPIRATIONS = 6;
+
+/**
+ * Superficie de IV de la cadena COMPLETA (no solo lo que operó): vencimientos
+ * cercanos + IV media/ponderada por vencimiento. Devuelve null si algo falla, y
+ * entonces el Contexto IV cae a la IV de los trades del flujo (comportamiento previo).
+ */
+async function fetchChainIvSurface(ticker: string, now: Date): Promise<ChainIvSurface | null> {
+  try {
+    const expirations = await fetchExpirations(ticker);
+    const dates = nearestExpirations(expirations.map((e) => e.date), IV_CHAIN_EXPIRATIONS, now);
+    if (dates.length === 0) return null;
+    const chains = await Promise.all(
+      dates.map((d) => fetchOptionChain2(ticker, d).then(normalizeChain2).catch(() => [])),
+    );
+    const contracts = chains.flat();
+    if (contracts.length === 0) return null;
+    return chainIvSurface(contracts, now);
+  } catch {
+    return null;
+  }
+}
 
 interface SseEvent {
   type: "step" | "done" | "error";
@@ -147,14 +179,22 @@ export async function GET(request: Request) {
         send({ type: "step", label: "Midiendo contexto de volatilidad implícita (IV y IV Rank)…" });
         let ivContext: IvContextScore | null = null;
         try {
-          const [dailyBars, ivHist] = await Promise.all([
+          const [dailyBars, ivHist, chainIv, ttMetrics] = await Promise.all([
             fetchDailyBars(ticker, 365).catch(() => []),
             loadIvHistory(ticker).catch(() => null),
+            // IV de TODA la cadena (option_chain_extended): más estable que solo los trades.
+            fetchChainIvSurface(ticker, new Date()),
+            // IV Rank REAL de Tastytrade (si está configurado). Degrada con gracia.
+            tastytradeConfigured() ? fetchMarketMetrics([ticker]).catch(() => []) : Promise.resolve([]),
           ]);
+          // Tastytrade da el IV Rank como proporción 0-1 ya convertido a % en fetchMarketMetrics.
+          const ttIvRank = ttMetrics.find((m) => m.symbol === ticker)?.ivRank ?? null;
           ivContext = ivContextScore({
             rows: convictionRows,
             closes: dailyBars.map((b) => b.close),
             ivHistory: ivHist?.snapshots.map((s) => ({ date: s.date, avgIv: s.avgIv })) ?? [],
+            chainIv: chainIv ?? undefined,
+            tastytradeIvRank: ttIvRank,
           });
           // Foto diaria de la IV: el IV Rank real se acumula hacia adelante.
           await saveIvSnapshot(ticker, ivContext).catch(() => null);
