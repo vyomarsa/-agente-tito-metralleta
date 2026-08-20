@@ -238,6 +238,26 @@ describe("wheelCandidates", () => {
     expect(out[0].metrics).toBeNull();
   });
 
+  it("elegibilidad: IV Rank real bajo (<20) bloquea con reason iv_baja", () => {
+    const out = wheelCandidates({ ...CAND_BASE, realIvRank: 15, quotes: [quote({})] });
+    expect(out).toHaveLength(1);
+    expect(out[0].blocked).toBe(true);
+    expect(out[0].blockReason).toBe("iv_baja");
+    expect(out[0].premium).toBeNull();
+    expect(out[0].score).toBeNull();
+  });
+
+  it("elegibilidad: IV Rank real por encima del piso NO bloquea", () => {
+    const out = wheelCandidates({ ...CAND_BASE, realIvRank: 25, quotes: [quote({})] });
+    expect(out[0].blocked).toBe(false);
+  });
+
+  it("elegibilidad: el proxy (sin realIvRank) NUNCA bloquea aunque sea bajo", () => {
+    // ivRank bajo pero SIN realIvRank → no se aplica la compuerta dura.
+    const out = wheelCandidates({ ...CAND_BASE, ivRank: 5, realIvRank: null, quotes: [quote({})] });
+    expect(out[0].blocked).toBe(false);
+  });
+
   it("un candidato válido trae delta negativo, métricas y score", () => {
     const out = wheelCandidates({ ...CAND_BASE, quotes: [quote({})] });
     expect(out).toHaveLength(1);

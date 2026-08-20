@@ -88,10 +88,20 @@ export function pickPremium(input: {
 
 // ── Liquidez: la salvaguarda ───────────────────────────────────────────
 
-export type WheelBlockReason = "sin_bid" | "spread_ancho" | "oi_bajo";
+export type WheelBlockReason = "sin_bid" | "spread_ancho" | "oi_bajo" | "iv_baja";
 
 export const MAX_SPREAD_PCT = 25;
 export const MIN_OI = 100;
+
+/**
+ * Piso de elegibilidad de IV Rank (0-100) para la Wheel. Por DEBAJO de esto la
+ * volatilidad está demasiado barata: la prima no paga el riesgo de asignación, así
+ * que el ticker NO es elegible para vender puts ahora (bloqueo `iv_baja`). La banda
+ * 20-30 sigue siendo solo penalización de score (no bloquea). SOLO se aplica con el
+ * IV Rank REAL de Tastytrade — nunca con el proxy de vol realizada (demasiado ruidoso
+ * para una compuerta dura). Ajustable: subir a 30 = compuerta más estricta.
+ */
+export const MIN_IV_RANK_ELIGIBLE = 20;
 
 /** Spread relativo al mid, en %. null si falta un lado de la horquilla. */
 export function spreadPctOf(bid: number | null | undefined, ask: number | null | undefined): number | null {
@@ -340,7 +350,15 @@ export interface CandidatesInput {
   spot: number;
   quotes: ChainQuote[];
   preset: WheelPreset;
+  /** IV Rank para el SCORE (real de Tastytrade si hay, si no el proxy). */
   ivRank: number | null;
+  /**
+   * IV Rank REAL de Tastytrade (0-100), SOLO para la compuerta de elegibilidad
+   * (`iv_baja`). null = sin dato real → no se aplica la compuerta (el proxy nunca
+   * bloquea). Separado de `ivRank` a propósito: el score tolera el proxy, la
+   * elegibilidad dura no.
+   */
+  realIvRank?: number | null;
   supports: Level[];
   earnings: EarningsFlag;
   /** IV de respaldo (volatilidad realizada) cuando la bisección no converge. */
@@ -356,8 +374,12 @@ export function atmIv(rows: { strike: number; iv: number }[], spot: number): num
 }
 
 export function wheelCandidates(input: CandidatesInput): WheelCandidate[] {
-  const { ticker, spot, quotes, preset, ivRank, supports, earnings, fallbackIv } = input;
+  const { ticker, spot, quotes, preset, ivRank, realIvRank, supports, earnings, fallbackIv } = input;
   if (!(spot > 0)) return [];
+
+  // Compuerta de elegibilidad por IV Rank REAL: si la volatilidad está demasiado
+  // barata, el ticker no es elegible para vender prima (SOLO con dato real).
+  const ivIneligible = realIvRank != null && realIvRank < MIN_IV_RANK_ELIGIBLE;
 
   const out: WheelCandidate[] = [];
 
@@ -378,6 +400,18 @@ export function wheelCandidates(input: CandidatesInput): WheelCandidate[] {
     if (absDelta < preset.deltaMin || absDelta > preset.deltaMax) continue;
 
     const spreadPct = spreadPctOf(q.bid, q.ask);
+
+    // Elegibilidad por IV Rank real (antes que la liquidez): vol demasiado barata
+    // para vender prima → bloqueado, sin prima ni score, como la salvaguarda dura.
+    if (ivIneligible) {
+      out.push({
+        ticker, strike: q.strike, expiration: q.expiration, dte: q.dte, spot,
+        delta, iv, ivSource, openInterest: q.openInterest, spreadPct,
+        premium: null, metrics: null, score: null, blocked: true, blockReason: "iv_baja",
+      });
+      continue;
+    }
+
     const blockReason = liquidityBlock({ bid: q.bid, ask: q.ask, openInterest: q.openInterest });
 
     if (blockReason) {

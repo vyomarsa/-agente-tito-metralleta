@@ -86,7 +86,8 @@ export async function GET(req: Request) {
             const rvSeries = realizedVolSeries(bars.map((b) => b.close), 30);
             const currentRv = rvSeries.length > 0 ? rvSeries[rvSeries.length - 1] : null;
             const proxyRank = currentRv != null ? rankWithin(rvSeries, currentRv) : null;
-            const ivRank = ivRankMap.get(sym.ticker) ?? proxyRank;
+            const realIvRank = ivRankMap.get(sym.ticker) ?? null;
+            const ivRank = realIvRank ?? proxyRank;
 
             // Earnings sobre el vencimiento más cercano de la ventana.
             // frontSkew: null a propósito — este escaneo Wheel no computa
@@ -102,7 +103,7 @@ export async function GET(req: Request) {
             const fallbackIv = currentRv != null ? currentRv / 100 : 0.4;
             const cands = wheelCandidates({
               ticker: sym.ticker, spot: chain.spot, quotes: chain.quotes,
-              preset, ivRank, supports: levels.supports, earnings, fallbackIv,
+              preset, ivRank, realIvRank, supports: levels.supports, earnings, fallbackIv,
             });
             all.push(...cands);
             send({ type: "step", label: `${sym.ticker}: ${cands.filter((c) => !c.blocked).length} candidatos` });
