@@ -74,7 +74,7 @@ export default function Dashboard() {
   // Greeks REALES por contrato (MarketSnack primero, Schwab de respaldo).
   // null = no disponible → se estiman con Black-Scholes.
   const [schwabGreeks, setSchwabGreeks] = useState<Map<string, SchwabGreek> | null>(null);
-  const [greeksSource, setGreeksSource] = useState<"marketsnack" | "schwab">("schwab");
+  const [greeksSource, setGreeksSource] = useState<"tastytrade" | "marketsnack" | "schwab">("schwab");
 
   const [aggScore, setAggScore] = useState<AggressionScore | null>(null);
   const [conviction, setConviction] = useState<ConvictionScore | null>(null);
@@ -283,24 +283,15 @@ export default function Dashboard() {
     const loadGreeks = async () => {
       const parse = (d: { greeks?: Record<string, SchwabGreek> } | null) =>
         d?.greeks ? Object.entries(d.greeks) : [];
-      try {
-        const ms = await fetch(`/api/marketsnack/greeks?ticker=${encodeURIComponent(tk)}`)
-          .then((r) => (r.ok ? r.json() : null))
-          .catch(() => null);
-        const msEntries = parse(ms);
-        if (msEntries.length > 0) {
-          setSchwabGreeks(new Map(msEntries));
-          setGreeksSource("marketsnack");
-          return;
-        }
-      } catch {
-        /* cae al respaldo de Schwab */
-      }
-      const sw = await fetch(`/api/schwab/greeks?ticker=${encodeURIComponent(tk)}`)
-        .then((r) => (r.ok ? r.json() : null))
-        .catch(() => null);
-      const swEntries = parse(sw);
-      setSchwabGreeks(swEntries.length > 0 ? new Map(swEntries) : null);
+      const get = (url: string) =>
+        fetch(url).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      // Cascada de greeks reales por prioridad: Tastytrade → MarketSnack → Schwab.
+      const tt = parse(await get(`/api/tastytrade/greeks?ticker=${encodeURIComponent(tk)}`));
+      if (tt.length > 0) { setSchwabGreeks(new Map(tt)); setGreeksSource("tastytrade"); return; }
+      const ms = parse(await get(`/api/marketsnack/greeks?ticker=${encodeURIComponent(tk)}`));
+      if (ms.length > 0) { setSchwabGreeks(new Map(ms)); setGreeksSource("marketsnack"); return; }
+      const sw = parse(await get(`/api/schwab/greeks?ticker=${encodeURIComponent(tk)}`));
+      setSchwabGreeks(sw.length > 0 ? new Map(sw) : null);
       setGreeksSource("schwab");
     };
     void loadGreeks();
@@ -500,7 +491,9 @@ export default function Dashboard() {
 
             {gex && (() => {
               const real = gex.greeksSource !== "estimated";
-              const sourceName = gex.greeksSource === "marketsnack" ? "MarketSnack" : "Schwab";
+              const sourceName =
+                gex.greeksSource === "tastytrade" ? "Tastytrade"
+                  : gex.greeksSource === "marketsnack" ? "MarketSnack" : "Schwab";
               return (
                 <div
                   title={

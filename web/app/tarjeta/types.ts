@@ -6,7 +6,7 @@ export interface TarjetaMeta {
   ticker: string;
   horizonDays: number;
   /** Fuente de los greeks del GEX: reales o estimados. */
-  greeksSource: "marketsnack" | "schwab" | "estimated";
+  greeksSource: "tastytrade" | "marketsnack" | "schwab" | "estimated";
   /** De dónde salió el spot. */
   spot: number;
   /** Resumen en lenguaje llano de la predicción (contexto). */

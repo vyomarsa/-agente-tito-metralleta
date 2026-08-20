@@ -31,7 +31,7 @@ import { gexAnalysis, type TradeLite, type SchwabGreek } from "@/lib/gex";
 import { predictPro } from "@/lib/prediction";
 import { findLevels, type ChainLevel, type FlowLevel } from "@/lib/levels";
 import { buildNewsReport } from "@/lib/news";
-import { fetchIvRankMap } from "@/lib/tastytrade";
+import { fetchIvRankMap, fetchTastytradeGreeks, tastytradeConfigured } from "@/lib/tastytrade";
 import { buildDecisionCard, type FlowTapeRow, type GammaRung } from "@/lib/decisionCard";
 import type { NewsBias } from "@/lib/news";
 import type { Row, DailyBar } from "@/lib/types";
@@ -55,8 +55,19 @@ const NEUTRAL_NEWS: NewsBias = { bias: "neutral", score: 0, positive: 0, negativ
 async function loadRealGreeks(
   ticker: string,
   now: Date,
-): Promise<{ map: Map<string, SchwabGreek> | undefined; hint: "marketsnack" | "schwab" }> {
-  // 1. MarketSnack (principal).
+): Promise<{ map: Map<string, SchwabGreek> | undefined; hint: "tastytrade" | "marketsnack" | "schwab" }> {
+  // 0. Tastytrade (streamer DXLink, PRIMERA prioridad).
+  if (tastytradeConfigured()) {
+    try {
+      const greeks = await fetchTastytradeGreeks(ticker);
+      if (Object.keys(greeks).length > 0) {
+        return { map: new Map(Object.entries(greeks)), hint: "tastytrade" };
+      }
+    } catch {
+      // cae a MarketSnack
+    }
+  }
+  // 1. MarketSnack.
   if (await marketsnackConfigured().catch(() => false)) {
     try {
       const expirations = await fetchExpirations(ticker);

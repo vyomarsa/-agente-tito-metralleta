@@ -332,6 +332,104 @@ export async function fetchIvRankMap(symbols: string[]): Promise<Map<string, num
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Chain + greeks REALES por el streamer DXLink (delta/gamma/IV/OI/bid-ask)
+// ---------------------------------------------------------------------------
+
+interface QuoteTokenResponse {
+  data?: { token?: string; "dxlink-url"?: string; level?: string };
+}
+
+interface NestedStrike {
+  "strike-price"?: string;
+  "call-streamer-symbol"?: string;
+  "put-streamer-symbol"?: string;
+}
+interface NestedExpiration {
+  "expiration-date"?: string; // YYYY-MM-DD
+  "days-to-expiration"?: number;
+  strikes?: NestedStrike[];
+}
+interface NestedChainResponse {
+  data?: { items?: Array<{ expirations?: NestedExpiration[] }> };
+}
+
+/** Greek real por contrato, misma forma que realGreeksMap/schwab (iv en DECIMAL). */
+export interface TtGreek {
+  gamma: number;
+  iv: number;
+  delta?: number;
+  bid?: number;
+  ask?: number;
+  openInterest?: number;
+}
+
+/**
+ * Mapa { "strike|expiration|type" -> {gamma, iv, ...} } con greeks REALES de
+ * Tastytrade (streamer DXLink), listo para inyectar en gexAnalysis/gexHeatmap.
+ * Toma los N vencimientos más cercanos (por defecto 8, como el heatmap). Server-only.
+ * Degrada con gracia: si algo falla lanza TastytradeError y el llamador cae a la
+ * siguiente fuente de la cascada (MarketSnack → Schwab).
+ */
+export async function fetchTastytradeGreeks(
+  ticker: string,
+  opts: { expirations?: number; timeoutMs?: number } = {},
+): Promise<Record<string, TtGreek>> {
+  const clean = ticker.trim().toUpperCase();
+  if (!clean) return {};
+  const maxExp = opts.expirations ?? 8;
+
+  // 1. Token del streamer + URL, y estructura del chain (símbolos) en paralelo.
+  const [qt, nested] = await Promise.all([
+    getJson<QuoteTokenResponse>("/api-quote-tokens"),
+    getJson<NestedChainResponse>(`/option-chains/${encodeURIComponent(clean)}/nested`),
+  ]);
+  const url = qt.data?.["dxlink-url"];
+  const token = qt.data?.token;
+  if (!url || !token) throw new TastytradeError("Tastytrade no devolvió el api-quote-token para el streamer.");
+
+  const expirations = (nested.data?.items?.[0]?.expirations ?? [])
+    .filter((e) => e["expiration-date"])
+    .sort((a, b) => (a["days-to-expiration"] ?? 1e9) - (b["days-to-expiration"] ?? 1e9))
+    .slice(0, maxExp);
+
+  // 2. streamer-symbol -> {strike, expiration, type}
+  const meta = new Map<string, { strike: number; expiration: string; type: "call" | "put" }>();
+  for (const e of expirations) {
+    const expiration = e["expiration-date"] as string;
+    for (const s of e.strikes ?? []) {
+      const strike = Number(s["strike-price"]);
+      if (!Number.isFinite(strike)) continue;
+      if (s["call-streamer-symbol"]) meta.set(s["call-streamer-symbol"], { strike, expiration, type: "call" });
+      if (s["put-streamer-symbol"]) meta.set(s["put-streamer-symbol"], { strike, expiration, type: "put" });
+    }
+  }
+  if (meta.size === 0) return {};
+
+  // 3. Snapshot por el streamer.
+  const { dxlinkSnapshot } = await import("./tastytradeStream");
+  const snap = await dxlinkSnapshot({ url, token, symbols: [...meta.keys()], timeoutMs: opts.timeoutMs });
+
+  // 4. Mapa por contrato (solo los que trajeron greeks utilizables).
+  const out: Record<string, TtGreek> = {};
+  for (const [sym, f] of snap) {
+    const m = meta.get(sym);
+    if (!m) continue;
+    const gamma = f.gamma != null && f.gamma > 0 ? f.gamma : null;
+    const iv = f.iv != null && f.iv > 0 ? f.iv : null;
+    if (gamma == null && iv == null) continue;
+    out[`${m.strike}|${m.expiration}|${m.type}`] = {
+      gamma: gamma ?? 0,
+      iv: iv ?? 0,
+      delta: f.delta,
+      bid: f.bid,
+      ask: f.ask,
+      openInterest: f.oi,
+    };
+  }
+  return out;
+}
+
 function describeStatus(status: number, body: string): string {
   switch (status) {
     case 401:

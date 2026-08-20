@@ -81,7 +81,7 @@ export interface GexAnalysis {
   lowLiquidity: boolean;
   n: number;                        // strikes considerados cerca del spot
   /** De dónde salieron gamma/IV: "marketsnack"/"schwab" = reales, "estimated" = Black-Scholes. */
-  greeksSource: "marketsnack" | "schwab" | "estimated";
+  greeksSource: "tastytrade" | "marketsnack" | "schwab" | "estimated";
 }
 
 /**
@@ -114,14 +114,14 @@ export interface GexInput {
    */
   schwabGreeks?: Map<string, SchwabGreek>;
   /** Etiqueta de origen de los greeks reales para el reporte (default "schwab"). */
-  greeksSource?: "marketsnack" | "schwab";
+  greeksSource?: "tastytrade" | "marketsnack" | "schwab";
 }
 
 const emptyAnalysis = (
   spot: number,
   iv: number,
   lowLiquidity: boolean,
-  greeksSource: "marketsnack" | "schwab" | "estimated" = "estimated",
+  greeksSource: "tastytrade" | "marketsnack" | "schwab" | "estimated" = "estimated",
 ): GexAnalysis => ({
   spot, iv, nodes: [], kingStrike: null, flipStrike: null,
   regime: "positive", totalNetGex: 0, direction: null, confidence: 0,
@@ -135,7 +135,7 @@ const emptyAnalysis = (
  */
 export function gexAnalysis(input: GexInput): GexAnalysis {
   const { rows, closes, spot, trades = [], convictionScore, structureScore, now, schwabGreeks } = input;
-  const realSourceLabel: "marketsnack" | "schwab" = input.greeksSource ?? "schwab";
+  const realSourceLabel: "tastytrade" | "marketsnack" | "schwab" = input.greeksSource ?? "schwab";
   const estIv = estimateIV(closes);
   const lowLiquidity = input.lowLiquidity ?? false;
 
@@ -155,7 +155,7 @@ export function gexAnalysis(input: GexInput): GexAnalysis {
     }
     if (ivN > 0) { iv = ivSum / ivN; usedSchwab = true; }
   }
-  const greeksSource: "marketsnack" | "schwab" | "estimated" =
+  const greeksSource: "tastytrade" | "marketsnack" | "schwab" | "estimated" =
     usedSchwab ? realSourceLabel : "estimated";
 
   if (spot <= 0 || rows.length === 0) return emptyAnalysis(spot, iv, lowLiquidity, greeksSource);
