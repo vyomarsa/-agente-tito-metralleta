@@ -44,7 +44,7 @@ import {
   type SpreadScan,
 } from "@/lib/creditSpread";
 import { SPREAD_UNIVERSE } from "@/lib/spreadUniverse";
-import { fetchIvRankMap } from "@/lib/tastytrade";
+import { fetchIvRankMap, fetchTastytradeChain, tastytradeConfigured, type TtContract } from "@/lib/tastytrade";
 import type { SpreadSseEvent, Source } from "@/app/spreads/types";
 
 export const runtime = "nodejs";
@@ -63,7 +63,7 @@ function isBias(v: string | null): v is Bias {
 }
 
 function isSource(v: string | null): v is Source {
-  return v === "marketsnack" || v === "schwab";
+  return v === "tastytrade" || v === "marketsnack" || v === "schwab";
 }
 
 /** Corre `worker` sobre `items` con como mucho `limit` en vuelo a la vez. */
@@ -155,12 +155,45 @@ async function fetchWindowQuotesSchwab(ticker: string, now: Date): Promise<Sprea
   return contracts.map((c) => toSpreadQuoteFromSchwab(c, now));
 }
 
+/**
+ * TtContract (streamer DXLink de Tastytrade) → SpreadQuote. Tastytrade entrega el
+ * delta ya FIRMADO (puts negativo) y la IV en DECIMAL, igual que MarketSnack. El
+ * DTE se recalcula desde el vencimiento para casar con la banda del motor.
+ */
+function toSpreadQuoteFromTt(c: TtContract, now: Date): SpreadQuote {
+  return {
+    strike: c.strike,
+    type: c.type,
+    expiration: c.expiration,
+    dte: dteOf(c.expiration, now),
+    bid: c.bid,
+    ask: c.ask,
+    delta: c.delta, // Tastytrade ya lo da con signo
+    iv: c.iv, // decimal
+    openInterest: c.openInterest,
+    volume: c.volume,
+  };
+}
+
+/**
+ * Cadena de la banda 4–7 DTE desde Tastytrade (streamer). Una conexión por ticker
+ * trae greeks/IV/OI/bid-ask/volumen reales. Se pide con ±1 día de holgura y el
+ * motor recorta a la banda exacta con dteOf.
+ */
+async function fetchWindowQuotesTt(ticker: string, now: Date): Promise<SpreadQuote[]> {
+  const { contracts } = await fetchTastytradeChain(ticker, {
+    dteMin: Math.max(0, DTE_MIN - 1),
+    dteMax: DTE_MAX + 1,
+  });
+  return contracts.map((c) => toSpreadQuoteFromTt(c, now));
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const biasParam = url.searchParams.get("bias");
   const bias: Bias = isBias(biasParam) ? biasParam : "neutral";
   const sourceParam = url.searchParams.get("source");
-  const requestedSource: Source = isSource(sourceParam) ? sourceParam : "marketsnack";
+  const explicitSource: Source | null = isSource(sourceParam) ? sourceParam : null;
   // Modo experto: degrada los filtros DUROS (macro/tendencia/nivel guardián) a avisos.
   const expert = url.searchParams.get("expert") === "1";
   const now = new Date();
@@ -182,7 +215,13 @@ export async function GET(req: Request) {
         // cookie) en vez de romper el escáner. El mandato prohíbe estimar el delta,
         // así que sin ninguna fuente real → error claro, nunca estimación silenciosa.
         const hasCookie = await marketsnackConfigured();
-        let source: Source = requestedSource;
+        const ttReady = tastytradeConfigured();
+        // Prioridad Tastytrade → MarketSnack → Schwab, salvo override ?source=.
+        let source: Source = explicitSource ?? (ttReady ? "tastytrade" : hasCookie ? "marketsnack" : "schwab");
+        if (source === "tastytrade" && !ttReady) {
+          source = hasCookie ? "marketsnack" : "schwab";
+          send({ type: "step", label: "Tastytrade sin configurar → usando la siguiente fuente" });
+        }
         if (source === "schwab") {
           const st = await schwabStatus().catch(() => null);
           if (!st?.connected) {
@@ -209,7 +248,10 @@ export async function GET(req: Request) {
           });
           return;
         }
-        const fetchQuotes = source === "schwab" ? fetchWindowQuotesSchwab : fetchWindowQuotes;
+        const fetchQuotes =
+          source === "tastytrade" ? fetchWindowQuotesTt
+            : source === "schwab" ? fetchWindowQuotesSchwab
+              : fetchWindowQuotes;
 
         // 2. Calendario macro — si no hay, se BLOQUEA (no se opera a ciegas).
         const macro = await cachedMacroCalendar(now);

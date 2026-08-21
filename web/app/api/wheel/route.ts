@@ -8,11 +8,11 @@ import { fetchWheelChain } from "@/lib/massive";
 import { cachedDailyBars } from "@/lib/barsStore";
 import { findLevels, type LvlBar } from "@/lib/levels";
 import { realizedVolSeries, rankWithin } from "@/lib/ivcontext";
-import { fetchIvRankMap } from "@/lib/tastytrade";
+import { fetchIvRankMap, fetchTastytradeChain, tastytradeConfigured, type TtContract } from "@/lib/tastytrade";
 import { earningsForTicker } from "@/lib/earnings";
 import {
   WHEEL_PRESETS, wheelCandidates,
-  type PresetId, type WheelCandidate,
+  type PresetId, type WheelCandidate, type WheelPreset, type ChainQuote,
 } from "@/lib/wheel";
 import { WHEEL_UNIVERSE } from "@/lib/wheelUniverse";
 import type { WheelSseEvent } from "@/app/wheel/types";
@@ -28,6 +28,37 @@ function sse(event: WheelSseEvent): string {
 
 function isPreset(v: string | null): v is PresetId {
   return v === "conservador" || v === "balanceado" || v === "agresivo";
+}
+
+function ttToChainQuote(c: TtContract): ChainQuote {
+  return {
+    strike: c.strike, expiration: c.expiration, dte: c.dte,
+    bid: c.bid, ask: c.ask, lastTrade: c.last, openInterest: c.openInterest,
+  };
+}
+
+/**
+ * Cadena de la Wheel por prioridad: Tastytrade (streamer, bid/ask/OI/spot reales)
+ * → Massive de respaldo. Tastytrade da bid/ask/OI/último y el spot del subyacente;
+ * la Wheel recalcula IV/delta desde el mid como siempre. Si Tastytrade no da spot o
+ * cadena, cae a Massive (que en plan gratis puede traer el spot roto — de ahí el
+ * respaldo).
+ */
+async function wheelChain(
+  ticker: string, preset: WheelPreset, now: Date,
+): Promise<{ spot: number | null; quotes: ChainQuote[] }> {
+  if (tastytradeConfigured()) {
+    try {
+      const { spot, contracts } = await fetchTastytradeChain(ticker, {
+        dteMin: preset.dteMin, dteMax: preset.dteMax,
+      });
+      const quotes = contracts.map(ttToChainQuote);
+      if (spot != null && spot > 0 && quotes.length > 0) return { spot, quotes };
+    } catch {
+      // cae a Massive
+    }
+  }
+  return fetchWheelChain(ticker, { dteMin: preset.dteMin, dteMax: preset.dteMax, now });
 }
 
 /** Corre `worker` sobre `items` con como mucho `limit` en vuelo a la vez. */
@@ -69,9 +100,7 @@ export async function GET(req: Request) {
 
         await mapLimit(WHEEL_UNIVERSE, CONCURRENCY, async (sym) => {
           try {
-            const chain = await fetchWheelChain(sym.ticker, {
-              dteMin: preset.dteMin, dteMax: preset.dteMax, now,
-            });
+            const chain = await wheelChain(sym.ticker, preset, now);
             if (chain.spot == null || chain.quotes.length === 0) {
               failed++;
               send({ type: "step", label: `${sym.ticker}: sin cadena` });

@@ -20,12 +20,15 @@ export interface DxFields {
   bid?: number;
   ask?: number;
   oi?: number; // open interest
+  last?: number; // último precio (Trade.price)
+  volume?: number; // volumen del día (Trade.dayVolume)
 }
 
 // Campos que pedimos por tipo de evento. El ORDEN define cómo se parsea COMPACT.
 const GREEKS_FIELDS = ["eventType", "eventSymbol", "delta", "gamma", "theta", "vega", "volatility", "price"];
 const QUOTE_FIELDS = ["eventType", "eventSymbol", "bidPrice", "askPrice"];
 const SUMMARY_FIELDS = ["eventType", "eventSymbol", "openInterest"];
+const TRADE_FIELDS = ["eventType", "eventSymbol", "price", "dayVolume"];
 
 interface SnapshotOpts {
   url: string;
@@ -100,7 +103,7 @@ export function dxlinkSnapshot(opts: SnapshotOpts): Promise<Map<string, DxFields
         case "CHANNEL_OPENED":
           send({
             type: "FEED_SETUP", channel: 1, acceptAggregationPeriod: 0.1, acceptDataFormat: "COMPACT",
-            acceptEventFields: { Greeks: GREEKS_FIELDS, Quote: QUOTE_FIELDS, Summary: SUMMARY_FIELDS },
+            acceptEventFields: { Greeks: GREEKS_FIELDS, Quote: QUOTE_FIELDS, Summary: SUMMARY_FIELDS, Trade: TRADE_FIELDS },
           });
           break;
         case "FEED_CONFIG": {
@@ -118,6 +121,7 @@ export function dxlinkSnapshot(opts: SnapshotOpts): Promise<Map<string, DxFields
                 { type: "Greeks", symbol: s },
                 { type: "Quote", symbol: s },
                 { type: "Summary", symbol: s },
+                { type: "Trade", symbol: s },
               ]),
             });
           }
@@ -129,7 +133,7 @@ export function dxlinkSnapshot(opts: SnapshotOpts): Promise<Map<string, DxFields
           for (let i = 0; i + 1 < data.length; i += 2) {
             const type = data[i] as string;
             const vals = data[i + 1] as unknown[];
-            const n = type === "Greeks" ? GREEKS_FIELDS.length : type === "Quote" ? QUOTE_FIELDS.length : type === "Summary" ? SUMMARY_FIELDS.length : 0;
+            const n = type === "Greeks" ? GREEKS_FIELDS.length : type === "Quote" ? QUOTE_FIELDS.length : type === "Summary" ? SUMMARY_FIELDS.length : type === "Trade" ? TRADE_FIELDS.length : 0;
             if (n === 0 || !Array.isArray(vals)) continue;
             for (let k = 0; k + n <= vals.length; k += n) {
               const sym = vals[k + 1] as string;
@@ -147,6 +151,8 @@ export function dxlinkSnapshot(opts: SnapshotOpts): Promise<Map<string, DxFields
                 cur.bid = num(vals[k + 2]); cur.ask = num(vals[k + 3]);
               } else if (type === "Summary") {
                 cur.oi = num(vals[k + 2]);
+              } else if (type === "Trade") {
+                cur.last = num(vals[k + 2]); cur.volume = num(vals[k + 3]);
               }
               collected.set(sym, cur);
             }

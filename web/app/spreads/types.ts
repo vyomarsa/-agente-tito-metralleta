@@ -3,7 +3,7 @@
 import type { Bias, SpreadScan } from "@/lib/creditSpread";
 
 /** Fuente de la cadena: MarketSnack (default) o Schwab (greeks de bróker). */
-export type Source = "marketsnack" | "schwab";
+export type Source = "tastytrade" | "marketsnack" | "schwab";
 
 export interface SpreadStepEvent {
   type: "step";

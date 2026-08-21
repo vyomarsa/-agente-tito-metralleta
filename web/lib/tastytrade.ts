@@ -364,6 +364,77 @@ export interface TtGreek {
   openInterest?: number;
 }
 
+/** Contrato normalizado de la cadena de Tastytrade (delta/IV/OI/bid-ask REALES). */
+export interface TtContract {
+  strike: number;
+  type: "call" | "put";
+  expiration: string; // YYYY-MM-DD
+  dte: number;
+  bid: number | null;
+  ask: number | null;
+  delta: number | null;
+  iv: number | null; // decimal
+  gamma: number | null;
+  openInterest: number;
+  volume: number; // volumen del día
+  last: number | null; // último precio operado
+}
+
+interface SymMeta { strike: number; expiration: string; type: "call" | "put"; dte: number }
+interface ChainFilter { expirations?: number; dteMin?: number; dteMax?: number }
+
+/**
+ * Núcleo compartido: saca el api-quote-token + la estructura del chain, filtra los
+ * vencimientos (por ventana de DTE o por los N más cercanos), corre el snapshot del
+ * streamer y devuelve el meta por símbolo + lo recogido + el símbolo subyacente.
+ */
+async function streamChain(
+  clean: string,
+  filter: ChainFilter,
+  opts: { timeoutMs?: number; includeUnderlying?: boolean },
+): Promise<{ meta: Map<string, SymMeta>; snap: Map<string, import("./tastytradeStream").DxFields>; underlying: string | null }> {
+  const [qt, nested] = await Promise.all([
+    getJson<QuoteTokenResponse>("/api-quote-tokens"),
+    getJson<NestedChainResponse>(`/option-chains/${encodeURIComponent(clean)}/nested`),
+  ]);
+  const url = qt.data?.["dxlink-url"];
+  const token = qt.data?.token;
+  if (!url || !token) throw new TastytradeError("Tastytrade no devolvió el api-quote-token para el streamer.");
+
+  let exps = (nested.data?.items?.[0]?.expirations ?? [])
+    .filter((e) => e["expiration-date"])
+    .sort((a, b) => (a["days-to-expiration"] ?? 1e9) - (b["days-to-expiration"] ?? 1e9));
+  if (filter.dteMin != null || filter.dteMax != null) {
+    exps = exps.filter((e) => {
+      const d = e["days-to-expiration"] ?? -1;
+      return (filter.dteMin == null || d >= filter.dteMin) && (filter.dteMax == null || d <= filter.dteMax);
+    });
+  } else {
+    exps = exps.slice(0, filter.expirations ?? 8);
+  }
+
+  const meta = new Map<string, SymMeta>();
+  for (const e of exps) {
+    const expiration = e["expiration-date"] as string;
+    const dte = e["days-to-expiration"] ?? 0;
+    for (const s of e.strikes ?? []) {
+      const strike = Number(s["strike-price"]);
+      if (!Number.isFinite(strike)) continue;
+      if (s["call-streamer-symbol"]) meta.set(s["call-streamer-symbol"], { strike, expiration, type: "call", dte });
+      if (s["put-streamer-symbol"]) meta.set(s["put-streamer-symbol"], { strike, expiration, type: "put", dte });
+    }
+  }
+  // Símbolo del subyacente en dxFeed = el ticker plano (equities/ETFs).
+  const underlying = opts.includeUnderlying ? clean : null;
+  const symbols = [...meta.keys()];
+  if (underlying) symbols.push(underlying);
+  if (symbols.length === 0) return { meta, snap: new Map(), underlying };
+
+  const { dxlinkSnapshot } = await import("./tastytradeStream");
+  const snap = await dxlinkSnapshot({ url, token, symbols, timeoutMs: opts.timeoutMs });
+  return { meta, snap, underlying };
+}
+
 /**
  * Mapa { "strike|expiration|type" -> {gamma, iv, ...} } con greeks REALES de
  * Tastytrade (streamer DXLink), listo para inyectar en gexAnalysis/gexHeatmap.
@@ -377,40 +448,8 @@ export async function fetchTastytradeGreeks(
 ): Promise<Record<string, TtGreek>> {
   const clean = ticker.trim().toUpperCase();
   if (!clean) return {};
-  const maxExp = opts.expirations ?? 8;
+  const { meta, snap } = await streamChain(clean, { expirations: opts.expirations ?? 8 }, { timeoutMs: opts.timeoutMs });
 
-  // 1. Token del streamer + URL, y estructura del chain (símbolos) en paralelo.
-  const [qt, nested] = await Promise.all([
-    getJson<QuoteTokenResponse>("/api-quote-tokens"),
-    getJson<NestedChainResponse>(`/option-chains/${encodeURIComponent(clean)}/nested`),
-  ]);
-  const url = qt.data?.["dxlink-url"];
-  const token = qt.data?.token;
-  if (!url || !token) throw new TastytradeError("Tastytrade no devolvió el api-quote-token para el streamer.");
-
-  const expirations = (nested.data?.items?.[0]?.expirations ?? [])
-    .filter((e) => e["expiration-date"])
-    .sort((a, b) => (a["days-to-expiration"] ?? 1e9) - (b["days-to-expiration"] ?? 1e9))
-    .slice(0, maxExp);
-
-  // 2. streamer-symbol -> {strike, expiration, type}
-  const meta = new Map<string, { strike: number; expiration: string; type: "call" | "put" }>();
-  for (const e of expirations) {
-    const expiration = e["expiration-date"] as string;
-    for (const s of e.strikes ?? []) {
-      const strike = Number(s["strike-price"]);
-      if (!Number.isFinite(strike)) continue;
-      if (s["call-streamer-symbol"]) meta.set(s["call-streamer-symbol"], { strike, expiration, type: "call" });
-      if (s["put-streamer-symbol"]) meta.set(s["put-streamer-symbol"], { strike, expiration, type: "put" });
-    }
-  }
-  if (meta.size === 0) return {};
-
-  // 3. Snapshot por el streamer.
-  const { dxlinkSnapshot } = await import("./tastytradeStream");
-  const snap = await dxlinkSnapshot({ url, token, symbols: [...meta.keys()], timeoutMs: opts.timeoutMs });
-
-  // 4. Mapa por contrato (solo los que trajeron greeks utilizables).
   const out: Record<string, TtGreek> = {};
   for (const [sym, f] of snap) {
     const m = meta.get(sym);
@@ -419,15 +458,48 @@ export async function fetchTastytradeGreeks(
     const iv = f.iv != null && f.iv > 0 ? f.iv : null;
     if (gamma == null && iv == null) continue;
     out[`${m.strike}|${m.expiration}|${m.type}`] = {
-      gamma: gamma ?? 0,
-      iv: iv ?? 0,
-      delta: f.delta,
-      bid: f.bid,
-      ask: f.ask,
-      openInterest: f.oi,
+      gamma: gamma ?? 0, iv: iv ?? 0, delta: f.delta, bid: f.bid, ask: f.ask, openInterest: f.oi,
     };
   }
   return out;
+}
+
+/**
+ * Cadena COMPLETA de Tastytrade (contratos con delta/IV/OI/bid-ask REALES) en una
+ * ventana de DTE, más el spot del subyacente (todo por el mismo streamer). Para los
+ * escáneres de spreads/wheel. Server-only. Lanza TastytradeError si falla → el
+ * llamador cae a MarketSnack/Massive.
+ */
+export async function fetchTastytradeChain(
+  ticker: string,
+  opts: { dteMin?: number; dteMax?: number; timeoutMs?: number } = {},
+): Promise<{ spot: number | null; contracts: TtContract[] }> {
+  const clean = ticker.trim().toUpperCase();
+  if (!clean) return { spot: null, contracts: [] };
+  const { meta, snap, underlying } = await streamChain(
+    clean, { dteMin: opts.dteMin, dteMax: opts.dteMax }, { timeoutMs: opts.timeoutMs, includeUnderlying: true },
+  );
+
+  // Spot del subyacente = mid de su Quote (si llegó).
+  let spot: number | null = null;
+  if (underlying) {
+    const u = snap.get(underlying);
+    if (u && u.bid != null && u.ask != null && u.bid > 0 && u.ask > 0) spot = (u.bid + u.ask) / 2;
+  }
+
+  const contracts: TtContract[] = [];
+  for (const [sym, f] of snap) {
+    const m = meta.get(sym);
+    if (!m) continue; // salta el subyacente y símbolos desconocidos
+    contracts.push({
+      strike: m.strike, type: m.type, expiration: m.expiration, dte: m.dte,
+      bid: f.bid ?? null, ask: f.ask ?? null,
+      delta: f.delta ?? null, iv: f.iv != null && f.iv > 0 ? f.iv : null,
+      gamma: f.gamma ?? null, openInterest: f.oi ?? 0,
+      volume: f.volume ?? 0, last: f.last ?? null,
+    });
+  }
+  return { spot, contracts };
 }
 
 function describeStatus(status: number, body: string): string {
