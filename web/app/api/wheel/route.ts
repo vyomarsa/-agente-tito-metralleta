@@ -8,7 +8,7 @@ import { fetchWheelChain } from "@/lib/massive";
 import { cachedDailyBars } from "@/lib/barsStore";
 import { findLevels, type LvlBar } from "@/lib/levels";
 import { realizedVolSeries, rankWithin } from "@/lib/ivcontext";
-import { fetchIvRankMap, fetchTastytradeChain, tastytradeConfigured, type TtContract } from "@/lib/tastytrade";
+import { fetchIvRankMap, fetchTastytradeChain, fetchQuoteToken, tastytradeConfigured, type TtContract, type QuoteToken } from "@/lib/tastytrade";
 import { earningsForTicker } from "@/lib/earnings";
 import {
   WHEEL_PRESETS, wheelCandidates,
@@ -45,12 +45,12 @@ function ttToChainQuote(c: TtContract): ChainQuote {
  * respaldo).
  */
 async function wheelChain(
-  ticker: string, preset: WheelPreset, now: Date,
+  ticker: string, preset: WheelPreset, now: Date, quoteToken?: QuoteToken,
 ): Promise<{ spot: number | null; quotes: ChainQuote[] }> {
   if (tastytradeConfigured()) {
     try {
       const { spot, contracts } = await fetchTastytradeChain(ticker, {
-        dteMin: preset.dteMin, dteMax: preset.dteMax,
+        dteMin: preset.dteMin, dteMax: preset.dteMax, quoteToken,
       });
       const quotes = contracts.map(ttToChainQuote);
       if (spot != null && spot > 0 && quotes.length > 0) return { spot, quotes };
@@ -97,10 +97,12 @@ export async function GET(req: Request) {
         if (ivRankMap.size > 0) {
           send({ type: "step", label: `IV Rank real de Tastytrade para ${ivRankMap.size} tickers` });
         }
+        // Un solo api-quote-token para TODO el escaneo (no uno por ticker).
+        const ttToken = tastytradeConfigured() ? await fetchQuoteToken().catch(() => undefined) : undefined;
 
         await mapLimit(WHEEL_UNIVERSE, CONCURRENCY, async (sym) => {
           try {
-            const chain = await wheelChain(sym.ticker, preset, now);
+            const chain = await wheelChain(sym.ticker, preset, now, ttToken);
             if (chain.spot == null || chain.quotes.length === 0) {
               failed++;
               send({ type: "step", label: `${sym.ticker}: sin cadena` });

@@ -383,6 +383,22 @@ export interface TtContract {
 interface SymMeta { strike: number; expiration: string; type: "call" | "put"; dte: number }
 interface ChainFilter { expirations?: number; dteMin?: number; dteMax?: number }
 
+/** Token + URL del streamer DXLink. Autoriza la conexión (NO es por ticker). */
+export interface QuoteToken { url: string; token: string }
+
+/**
+ * Pide un `api-quote-token` (autoriza el streamer). Se puede REUTILIZAR en muchas
+ * conexiones/tickers dentro de un mismo escaneo → los escáneres lo piden una sola
+ * vez y lo pasan a cada `fetchTastytradeChain`, en vez de uno por ticker.
+ */
+export async function fetchQuoteToken(): Promise<QuoteToken> {
+  const qt = await getJson<QuoteTokenResponse>("/api-quote-tokens");
+  const url = qt.data?.["dxlink-url"];
+  const token = qt.data?.token;
+  if (!url || !token) throw new TastytradeError("Tastytrade no devolvió el api-quote-token para el streamer.");
+  return { url, token };
+}
+
 /**
  * Núcleo compartido: saca el api-quote-token + la estructura del chain, filtra los
  * vencimientos (por ventana de DTE o por los N más cercanos), corre el snapshot del
@@ -391,15 +407,14 @@ interface ChainFilter { expirations?: number; dteMin?: number; dteMax?: number }
 async function streamChain(
   clean: string,
   filter: ChainFilter,
-  opts: { timeoutMs?: number; includeUnderlying?: boolean },
+  opts: { timeoutMs?: number; includeUnderlying?: boolean; preToken?: QuoteToken },
 ): Promise<{ meta: Map<string, SymMeta>; snap: Map<string, import("./tastytradeStream").DxFields>; underlying: string | null }> {
-  const [qt, nested] = await Promise.all([
-    getJson<QuoteTokenResponse>("/api-quote-tokens"),
+  // El token se reutiliza si viene pre-obtenido (escaneos); si no, se pide aquí.
+  const [tok, nested] = await Promise.all([
+    opts.preToken ? Promise.resolve(opts.preToken) : fetchQuoteToken(),
     getJson<NestedChainResponse>(`/option-chains/${encodeURIComponent(clean)}/nested`),
   ]);
-  const url = qt.data?.["dxlink-url"];
-  const token = qt.data?.token;
-  if (!url || !token) throw new TastytradeError("Tastytrade no devolvió el api-quote-token para el streamer.");
+  const { url, token } = tok;
 
   let exps = (nested.data?.items?.[0]?.expirations ?? [])
     .filter((e) => e["expiration-date"])
@@ -472,12 +487,13 @@ export async function fetchTastytradeGreeks(
  */
 export async function fetchTastytradeChain(
   ticker: string,
-  opts: { dteMin?: number; dteMax?: number; timeoutMs?: number } = {},
+  opts: { dteMin?: number; dteMax?: number; timeoutMs?: number; quoteToken?: QuoteToken } = {},
 ): Promise<{ spot: number | null; contracts: TtContract[] }> {
   const clean = ticker.trim().toUpperCase();
   if (!clean) return { spot: null, contracts: [] };
   const { meta, snap, underlying } = await streamChain(
-    clean, { dteMin: opts.dteMin, dteMax: opts.dteMax }, { timeoutMs: opts.timeoutMs, includeUnderlying: true },
+    clean, { dteMin: opts.dteMin, dteMax: opts.dteMax },
+    { timeoutMs: opts.timeoutMs, includeUnderlying: true, preToken: opts.quoteToken },
   );
 
   // Spot del subyacente = mid de su Quote (si llegó).

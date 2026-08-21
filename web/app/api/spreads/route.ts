@@ -44,7 +44,7 @@ import {
   type SpreadScan,
 } from "@/lib/creditSpread";
 import { SPREAD_UNIVERSE } from "@/lib/spreadUniverse";
-import { fetchIvRankMap, fetchTastytradeChain, tastytradeConfigured, type TtContract } from "@/lib/tastytrade";
+import { fetchIvRankMap, fetchTastytradeChain, fetchQuoteToken, tastytradeConfigured, type TtContract, type QuoteToken } from "@/lib/tastytrade";
 import type { SpreadSseEvent, Source } from "@/app/spreads/types";
 
 export const runtime = "nodejs";
@@ -180,10 +180,11 @@ function toSpreadQuoteFromTt(c: TtContract, now: Date): SpreadQuote {
  * trae greeks/IV/OI/bid-ask/volumen reales. Se pide con ±1 día de holgura y el
  * motor recorta a la banda exacta con dteOf.
  */
-async function fetchWindowQuotesTt(ticker: string, now: Date): Promise<SpreadQuote[]> {
+async function fetchWindowQuotesTt(ticker: string, now: Date, quoteToken?: QuoteToken): Promise<SpreadQuote[]> {
   const { contracts } = await fetchTastytradeChain(ticker, {
     dteMin: Math.max(0, DTE_MIN - 1),
     dteMax: DTE_MAX + 1,
+    quoteToken,
   });
   return contracts.map((c) => toSpreadQuoteFromTt(c, now));
 }
@@ -248,8 +249,17 @@ export async function GET(req: Request) {
           });
           return;
         }
+        // Un solo api-quote-token para TODO el escaneo (no uno por ticker).
+        let ttToken: QuoteToken | undefined;
+        if (source === "tastytrade") {
+          ttToken = await fetchQuoteToken().catch(() => undefined);
+          if (!ttToken) {
+            source = hasCookie ? "marketsnack" : "schwab";
+            send({ type: "step", label: "Tastytrade sin token de streamer → usando la siguiente fuente" });
+          }
+        }
         const fetchQuotes =
-          source === "tastytrade" ? fetchWindowQuotesTt
+          source === "tastytrade" ? (t: string, n: Date) => fetchWindowQuotesTt(t, n, ttToken)
             : source === "schwab" ? fetchWindowQuotesSchwab
               : fetchWindowQuotes;
 

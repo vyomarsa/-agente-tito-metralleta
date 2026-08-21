@@ -11,6 +11,7 @@
 
 import { cachedDailyBars } from "./barsStore";
 import { fetchExpirations, fetchOptionChain2 } from "./marketsnack";
+import { fetchTastytradeChain, type QuoteToken, type TtContract } from "./tastytrade";
 import { dteOf, expirationsInDteWindow, normalizeChain2, type Chain2Contract } from "./optionChain2";
 import { creditSpreadCandidates, DTE_MIN, DTE_MAX, type SpreadQuote, type SpreadScan, type Bias } from "./creditSpread";
 import { earningsForTicker } from "./earnings";
@@ -114,4 +115,40 @@ export async function fetchWindowQuotes(ticker: string, now: Date): Promise<Spre
     for (const c of contracts) quotes.push(toSpreadQuote(c, now));
   }
   return quotes;
+}
+
+/**
+ * TtContract (streamer DXLink de Tastytrade) → SpreadQuote. Tastytrade entrega el
+ * delta ya FIRMADO (puts negativo) y la IV en DECIMAL; el DTE se recalcula desde el
+ * vencimiento para casar con la banda del motor.
+ */
+export function toSpreadQuoteFromTt(c: TtContract, now: Date): SpreadQuote {
+  return {
+    strike: c.strike,
+    type: c.type,
+    expiration: c.expiration,
+    dte: dteOf(c.expiration, now),
+    bid: c.bid,
+    ask: c.ask,
+    delta: c.delta,
+    iv: c.iv,
+    openInterest: c.openInterest,
+    volume: c.volume,
+  };
+}
+
+/**
+ * Cadena de la banda 4–7 DTE desde Tastytrade (streamer). Una conexión por ticker
+ * con greeks/IV/OI/bid-ask/volumen reales; se pide con ±1 día de holgura y el motor
+ * recorta a la banda exacta. `quoteToken` se reutiliza en todo el escaneo.
+ */
+export async function fetchWindowQuotesTt(
+  ticker: string, now: Date, quoteToken?: QuoteToken,
+): Promise<SpreadQuote[]> {
+  const { contracts } = await fetchTastytradeChain(ticker, {
+    dteMin: Math.max(0, DTE_MIN - 1),
+    dteMax: DTE_MAX + 1,
+    quoteToken,
+  });
+  return contracts.map((c) => toSpreadQuoteFromTt(c, now));
 }

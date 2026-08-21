@@ -12,11 +12,16 @@
 
 import { MassiveError } from "@/lib/massive";
 import { fetchOptionChain2, MarketSnackError } from "@/lib/marketsnack";
-import { normalizeChain2 } from "@/lib/optionChain2";
+import { dteOf, normalizeChain2, type Chain2Contract } from "@/lib/optionChain2";
 import { DTE_MAX, type SpreadCandidate } from "@/lib/creditSpread";
 import { SPREAD_UNIVERSE } from "@/lib/spreadUniverse";
 import { addDaysStr, cachedMacroCalendar, macroEventsInWindow } from "@/lib/macroCalendar";
-import { fetchWindowQuotes, scanSymbol } from "@/lib/spreadScan";
+import { fetchWindowQuotes, fetchWindowQuotesTt, scanSymbol } from "@/lib/spreadScan";
+import {
+  fetchTastytradeChain, fetchQuoteToken, tastytradeConfigured,
+  type QuoteToken, type TtContract,
+} from "@/lib/tastytrade";
+import type { SpreadQuote } from "@/lib/creditSpread";
 import {
   START_EQUITY, closePosition, managePosition, planOpen, positionFrom,
   reprice, sizeFor, summarize, type PrimaPosition,
@@ -42,6 +47,52 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R
     }),
   );
   return out;
+}
+
+/** TtContract → Chain2Contract (la forma que espera repriceFromChain). */
+function ttToChain2(c: TtContract): Chain2Contract {
+  return {
+    symbol: "",
+    type: c.type, strike: c.strike, expiration: c.expiration,
+    bid: c.bid, ask: c.ask,
+    mid: c.bid != null && c.ask != null ? (c.bid + c.ask) / 2 : null,
+    delta: c.delta, gamma: c.gamma, theta: null, vega: null,
+    iv: c.iv, openInterest: c.openInterest, volume: c.volume,
+    premiumTraded: 0, lastPrice: c.last,
+  };
+}
+
+/** Cadena de un vencimiento para re-cotizar, con cascada Tastytrade → MarketSnack. */
+async function chainForReprice(
+  ticker: string, expiration: string, now: Date, ttToken?: QuoteToken,
+): Promise<Chain2Contract[]> {
+  if (ttToken) {
+    try {
+      const dte = dteOf(expiration, now);
+      const { contracts } = await fetchTastytradeChain(ticker, {
+        dteMin: Math.max(0, dte - 1), dteMax: dte + 1, quoteToken: ttToken,
+      });
+      const c2 = contracts.map(ttToChain2);
+      if (c2.some((c) => c.expiration === expiration)) return c2;
+    } catch {
+      // cae a MarketSnack
+    }
+  }
+  return normalizeChain2(await fetchOptionChain2(ticker, expiration));
+}
+
+/** fetchQuotes del escaneo de apertura, con cascada Tastytrade → MarketSnack. */
+function makeFetchQuotes(ttToken?: QuoteToken): (t: string, n: Date) => Promise<SpreadQuote[]> {
+  if (!ttToken) return fetchWindowQuotes;
+  return async (t, n) => {
+    try { const q = await fetchWindowQuotesTt(t, n, ttToken); if (q.length > 0) return q; } catch { /* fallback */ }
+    try { return await fetchWindowQuotes(t, n); } catch { return []; }
+  };
+}
+
+/** Un solo api-quote-token para todo el pase (reprice o escaneo). undefined si no aplica. */
+async function scanToken(): Promise<QuoteToken | undefined> {
+  return tastytradeConfigured() ? fetchQuoteToken().catch(() => undefined) : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,11 +145,12 @@ async function doManage() {
   const notes: string[] = [];
   const siguen: PrimaPosition[] = [];
   const cerradas: PrimaPosition[] = [];
+  const ttToken = await scanToken(); // un token para todas las re-cotizaciones
 
   await mapLimit(abiertas, CONCURRENCY, async (p) => {
     let actualizada = p;
     try {
-      const chain = normalizeChain2(await fetchOptionChain2(p.ticker, p.expiration));
+      const chain = await chainForReprice(p.ticker, p.expiration, now, ttToken);
       const r = repriceFromChain(p, chain);
       if (r.currentValue == null) {
         // Sin precio NO se decide: aplicar una regla sobre un valor rancio podría
@@ -162,8 +214,11 @@ async function doOpen() {
   let escaneados = 0;
   const fallos: string[] = [];
 
+  const ttToken = await scanToken(); // un token para todo el escaneo
+  const fetchQuotes = makeFetchQuotes(ttToken);
+
   await mapLimit(SPREAD_UNIVERSE, CONCURRENCY, async (sym) => {
-    const r = await scanSymbol(sym, { now, macroEvents, bias: "neutral", expert: false, fetchQuotes: fetchWindowQuotes });
+    const r = await scanSymbol(sym, { now, macroEvents, bias: "neutral", expert: false, fetchQuotes });
     if (!r.ok) { fallos.push(`${sym.ticker}: ${r.reason}`); return; }
     escaneados += 1;
     candidatos.push(...r.scan.candidates);
