@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import SpreadCard from "@/app/components/SpreadCard";
 import SpreadsTable from "@/app/components/SpreadsTable";
+import { loadProfile } from "@/app/components/RiskProfileCard";
 import type { Bias, SpreadCandidate, SpreadScan } from "@/lib/creditSpread";
 import type { SpreadSseEvent, Source } from "./types";
 
@@ -25,9 +26,17 @@ type SpreadMeta = {
 };
 
 const SOURCES: { id: Source; label: string; hint: string }[] = [
+  { id: "tastytrade", label: "Tastytrade", hint: "fuente principal — greeks, delta, IV y volumen reales por el streamer" },
   { id: "marketsnack", label: "MarketSnack", hint: "siempre disponible" },
   { id: "schwab", label: "Schwab", hint: "greeks de bróker" },
 ];
+
+/** Nombre visible de cada fuente. Sin esto, Tastytrade se pintaba como "MarketSnack". */
+const SOURCE_LABEL: Record<Source, string> = {
+  tastytrade: "Tastytrade",
+  marketsnack: "MarketSnack",
+  schwab: "Schwab",
+};
 
 const BIASES: { id: Bias; label: string; hint: string }[] = [
   { id: "alcista", label: "📈 Alcista", hint: "solo Put Credit Spreads" },
@@ -38,8 +47,13 @@ const BIASES: { id: Bias; label: string; hint: string }[] = [
 export default function SpreadsPage() {
   const [view, setView] = useState<"estudiante" | "pro">("estudiante");
   const [bias, setBias] = useState<Bias>("neutral");
-  const [source, setSource] = useState<Source>("marketsnack");
+  const [source, setSource] = useState<Source>("tastytrade");
   const [expert, setExpert] = useState(false);
+  // Capital para dimensionar. Comparte la clave `tito.risk.accountSize` con
+  // /ideas a propósito: "mi cuenta" es UN dato, no uno por pantalla. Vive en
+  // localStorage y nunca viaja al servidor.
+  const [accountSize, setAccountSize] = useState(0);
+  const [accountDraft, setAccountDraft] = useState("");
 
   const [scans, setScans] = useState<SpreadScan[] | null>(null);
   const [meta, setMeta] = useState<SpreadMeta | null>(null);
@@ -49,6 +63,9 @@ export default function SpreadsPage() {
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
+    const prof = loadProfile();
+    setAccountSize(prof.accountSize);
+    setAccountDraft(String(prof.accountSize));
     const v = window.localStorage.getItem(KEY_VIEW);
     if (v === "pro" || v === "estudiante") setView(v);
     const b = window.localStorage.getItem(KEY_BIAS);
@@ -83,6 +100,13 @@ export default function SpreadsPage() {
 
   const pickBias = (b: Bias) => { setBias(b); window.localStorage.setItem(KEY_BIAS, b); };
   const pickView = (v: "estudiante" | "pro") => { setView(v); window.localStorage.setItem(KEY_VIEW, v); };
+  const commitAccount = (raw: string) => {
+    const n = Number(raw.replace(/[^0-9.]/g, ""));
+    const next = Number.isFinite(n) && n > 0 ? n : 0;
+    setAccountSize(next);
+    setAccountDraft(String(next));
+    try { window.localStorage.setItem("tito.risk.accountSize", String(next)); } catch { /* noop */ }
+  };
   const pickSource = (s: Source) => { setSource(s); window.localStorage.setItem(KEY_SOURCE, s); };
   const toggleExpert = () => {
     setExpert((prev) => {
@@ -122,6 +146,26 @@ export default function SpreadsPage() {
                 <small>{b.hint}</small>
               </button>
             ))}
+          </div>
+
+          {/* Capital para dimensionar. La ficha traduce cada candidato a
+              contratos con el mandato §8 (2–3% de riesgo por operación) usando
+              el MISMO `sizeFor` que la cuenta de paper, así que lo que ves aquí
+              es lo que abriría el ejecutor. El saldo no sale del navegador. */}
+          <div className="spread-capital">
+            <label htmlFor="spread-capital">Mi capital</label>
+            <input
+              id="spread-capital"
+              inputMode="numeric"
+              value={accountDraft}
+              onChange={(e) => setAccountDraft(e.target.value)}
+              onBlur={(e) => commitAccount(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") commitAccount((e.target as HTMLInputElement).value); }}
+            />
+            <span className="muted">
+              Cada ficha te dirá cuántos contratos caben arriesgando el 2–3% por operación.
+              Solo se guarda en este navegador.
+            </span>
           </div>
         </section>
 
@@ -182,15 +226,17 @@ export default function SpreadsPage() {
           <>
             <div className="wheel-status">
               Escaneadas {meta.scanned} · {meta.withCandidates} con candidatos · {meta.discarded} descartadas
-              <span className="wheel-tag"> fuente: {meta.source === "schwab" ? "Schwab" : "MarketSnack"}</span>
+              <span className="wheel-tag"> fuente: {SOURCE_LABEL[meta.source]}</span>
               {meta.source !== source && (
-                <span className="wheel-tag warn"> Schwab sin conectar: se usó MarketSnack</span>
+                <span className="wheel-tag warn">
+                  {" "}{SOURCE_LABEL[source]} no disponible: se usó {SOURCE_LABEL[meta.source]}
+                </span>
               )}
               {meta.degraded && <span className="wheel-tag warn"> datos parciales: falló más de la mitad</span>}
               {meta.macroStale && <span className="wheel-tag warn"> calendario macro en cache viejo</span>}
             </div>
             <p className="wheel-disclaimer">
-              Delta e IV son <b>reales de {meta.source === "schwab" ? "Schwab" : "MarketSnack"}</b>. Aun así,
+              Delta e IV son <b>reales de {SOURCE_LABEL[meta.source]}</b>. Aun así,
               las cotizaciones pueden estar retrasadas: estos son candidatos, no órdenes. Confirma el precio
               y el crédito en tu bróker antes de operar. El crédito se calcula sobre el <b>MID</b>.
             </p>
@@ -208,6 +254,7 @@ export default function SpreadsPage() {
                     key={`${c.ticker}-${c.type}-${c.shortLeg.strike}-${c.longLeg.strike}-${c.expiration}`}
                     c={c}
                     view={view}
+                    accountSize={accountSize}
                   />
                 ))}
               </div>

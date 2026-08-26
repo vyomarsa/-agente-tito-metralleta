@@ -38,11 +38,30 @@ export const SPREAD_UNIVERSE: SpreadSymbol[] = [
   //
   // El OEX tiene 101 tickers porque Alphabet cotiza en dos clases: se conserva GOOGL
   // y se omite GOOG (mismo subyacente = doble exposición al mismo riesgo).
-  // Tickers verificados uno a uno contra MarketSnack (2026-08-16): los 103 resuelven
-  // y tienen weeklies en la banda 4-7 DTE. Ojo con tres:
-  //   · HONA = Honeywell Aerospace (la escisión), es OTRA empresa distinta de HON.
-  //   · BNY  = Bank of New York Mellon; el viejo ticker BK ya no existe.
-  //   · BRKB = Berkshire clase B, SIN punto (así lo quiere MarketSnack).
+  // Tickers verificados uno a uno contra MarketSnack (2026-08-16) y REVISADOS contra
+  // MarketSnack + Tastytrade el 2026-08-24. Ojo con tres:
+  //   · BRKB = Berkshire clase B, SIN punto. Correcto en las DOS fuentes de opciones
+  //     (15 vencimientos, 1 en banda). Solo **Massive** lo escribe `BRK.B`, y allí solo
+  //     se le pide la capitalización: la traducción vive en `lib/marketCapStore.ts`.
+  //     No cambiar este ticker — con punto, Tastytrade devuelve 0 vencimientos.
+  //   · HONA salió y entró HON. `HONA` (Honeywell Aerospace, la escisión) resuelve en
+  //     ambas fuentes pero **no tiene weeklies**: su vencimiento más cercano es el
+  //     mensual a 25 DTE, así que jamás puede dar un candidato en la banda 4-7. `HON`
+  //     (Honeywell International, la matriz, S&P 100) sí: 14 vencimientos, 1 en banda.
+  //   · BNY se RETIRÓ. El ticker es correcto y la empresa existe (BNY Mellon, cap
+  //     $107B; el viejo `BK` ya no resuelve), pero **tampoco tiene weeklies** — 7
+  //     vencimientos, el primero a 25 DTE. No es un error de símbolo y no se arregla
+  //     renombrando: el instrumento no sirve para esta estrategia. Sale por la regla 2.
+  //
+  // La afirmación anterior de que "los 103 tienen weeklies en la banda" era FALSA para
+  // HONA y BNY: resuelven, pero solo con vencimientos mensuales. Comprobado en las dos
+  // fuentes por separado, que coinciden exactamente.
+  //
+  // PENDIENTE — otros CUATRO con el mismo perfil, comprobados el 2026-08-24 y dejados
+  // DENTRO a la espera de decidirlo: **AMT, DUK, LIN y SPG** solo tienen mensuales (el
+  // más cercano a 25 DTE), así que tampoco pueden dar un candidato en la banda 4-7 y
+  // salen siempre como "sin cadena 4–7 DTE". No estorban —fallan con gracia y pronto—
+  // pero gastan una conexión de streamer por pasada. Si se sacan, el universo baja a 98.
   { ticker: "AAPL", sector: "Tecnología", razon: "S&P 100" },
   { ticker: "ABBV", sector: "Salud", razon: "S&P 100" },
   { ticker: "ABT", sector: "Salud", razon: "S&P 100" },
@@ -60,7 +79,6 @@ export const SPREAD_UNIVERSE: SpreadSymbol[] = [
   { ticker: "BKNG", sector: "Consumo discrecional", razon: "S&P 100" },
   { ticker: "BLK", sector: "Financiero", razon: "S&P 100" },
   { ticker: "BMY", sector: "Salud", razon: "S&P 100" },
-  { ticker: "BNY", sector: "Financiero", razon: "S&P 100" },
   { ticker: "BRKB", sector: "Financiero", razon: "S&P 100" },
   { ticker: "C", sector: "Financiero", razon: "S&P 100" },
   { ticker: "CAT", sector: "Industrial", razon: "S&P 100" },
@@ -87,7 +105,7 @@ export const SPREAD_UNIVERSE: SpreadSymbol[] = [
   { ticker: "GOOGL", sector: "Comunicación", razon: "S&P 100" },
   { ticker: "GS", sector: "Financiero", razon: "S&P 100" },
   { ticker: "HD", sector: "Consumo discrecional", razon: "S&P 100" },
-  { ticker: "HONA", sector: "Industrial", razon: "S&P 100" },
+  { ticker: "HON", sector: "Industrial", razon: "S&P 100" },
   { ticker: "IBM", sector: "Tecnología", razon: "S&P 100" },
   { ticker: "INTC", sector: "Tecnología", razon: "S&P 100" },
   { ticker: "INTU", sector: "Tecnología", razon: "S&P 100" },

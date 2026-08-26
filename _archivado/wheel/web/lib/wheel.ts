@@ -171,7 +171,8 @@ export function wheelMetrics(input: {
 // ── Score compuesto Wheel (0-100) ──────────────────────────────────────
 
 /** Estado del riesgo de reporte dentro del vencimiento. */
-export type EarningsFlag = "fuera" | "dentro" | "dentro_confirmado" | "no_aplica";
+export type { EarningsFlag } from "./earnings";
+import type { EarningsFlag } from "./earnings";
 
 export interface ScorePart {
   points: number;

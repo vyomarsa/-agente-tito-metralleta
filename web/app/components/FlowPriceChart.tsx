@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { detectClusters, type FlowRow } from "@/lib/flow";
-import type { TfBar } from "@/lib/types";
+import { useBars } from "./useBars";
 import { dateET, hmET, int, money, px, timeET } from "../format";
 
 const FORWARD_SEC = 30 * 60; // seguimiento intradía: +30 min
@@ -49,8 +49,7 @@ export default function FlowPriceChart({ ticker, trades }: { ticker: string; tra
   const histRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [tf, setTf] = useState("5m5d");
-  const [bars, setBars] = useState<TfBar[] | null>(null);
-  const [loading, setLoading] = useState(false);
+  const { bars, stale, error, loading, retrying } = useBars(ticker, tf);
   const [flowTrades, setFlowTrades] = useState<FlowRow[] | null>(null);
   const [flowLoading, setFlowLoading] = useState(false);
 
@@ -59,18 +58,6 @@ export default function FlowPriceChart({ ticker, trades }: { ticker: string; tra
   // El flujo de la gráfica acompaña al timeframe (5d / 10d / 30d).
   const effTrades = flowTrades ?? trades;
   const clusters = useMemo(() => detectClusters(effTrades), [effTrades]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setBars(null);
-    setLoading(true);
-    fetch(`/api/bars?ticker=${encodeURIComponent(ticker)}&tf=${tf}`)
-      .then((r) => r.json())
-      .then((d) => { if (!cancelled) setBars(Array.isArray(d.bars) ? d.bars : []); })
-      .catch(() => { if (!cancelled) setBars([]); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [ticker, tf]);
 
   useEffect(() => {
     let cancelled = false;
@@ -288,8 +275,17 @@ export default function FlowPriceChart({ ticker, trades }: { ticker: string; tra
       </div>
       {flowLoading && <div className="chart-loading">Cargando flujo de {DAYS_BY_TF[tf] ?? 5} días…</div>}
       {loading && <div className="chart-loading">Cargando barras…</div>}
-      {!loading && bars && bars.length === 0 && <div className="chart-empty">Sin barras de precio para {ticker} en este timeframe.</div>}
+      {!loading && bars && bars.length === 0 && (
+        <div className="chart-empty">
+          {error
+            ? `${error}${retrying ? " Reintentando solo…" : ""}`
+            : `Sin barras de precio para ${ticker} en este timeframe.`}
+        </div>
+      )}
       <div className="flowchart-wrap" style={{ display: bars && bars.length > 0 ? "block" : "none" }}>
+        {/* Dentro del wrap a propósito: `.chart-stale` va absoluto y este es el
+            ancestro posicionado más cercano. */}
+        {stale && <div className="chart-stale">⚡ Barras de la última carga buena: {error}</div>}
         <div ref={priceRef} className="pane-price" />
         <div ref={histRef} className="pane-hist" />
         <div ref={tooltipRef} className="flow-legend" style={{ display: "none" }} />

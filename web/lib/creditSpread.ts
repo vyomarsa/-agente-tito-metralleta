@@ -32,7 +32,7 @@
 
 import { expectedMove } from "./expectedMove";
 import { realizedVolSeries, rankWithin } from "./ivcontext";
-import type { EarningsFlag } from "./wheel";
+import type { EarningsFlag } from "./earnings";
 import type { MacroEvent, MacroEventKind } from "./macroCalendar";
 
 const MULTIPLIER = 100;

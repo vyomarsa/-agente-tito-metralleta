@@ -4,12 +4,18 @@
 // flujo + noticias), corre gexAnalysis → predictPro → findLevels, y sintetiza la
 // Tarjeta de Decisión con `buildDecisionCard`. Emite un único evento `done`.
 //
-// Triangula fuentes como el resto del agente: Massive (cadena/barras/empresa),
-// MarketSnack (flujo real), Schwab (barras de índices que Massive no cotiza).
+// Triangula fuentes como el resto del agente: Tastytrade (cadena + greeks reales,
+// por el streamer y con cache de vida corta), MarketSnack (flujo real), Schwab
+// (barras de índices). Massive ya no está en el camino caliente: la ficha de
+// empresa y las barras salen de sus almacenes en disco.
 
 import { toRow, sortByOpenInterestDesc } from "@/lib/compute";
 import { structureScore } from "@/lib/structure";
-import { fetchCompany, fetchOptionChain, fetchDailyBars, MassiveError } from "@/lib/massive";
+import { MassiveError } from "@/lib/massive";
+import { cachedCompany } from "@/lib/companyStore";
+import { cachedDailyBars, loadBars, saveBars } from "@/lib/barsStore";
+import { marketDateStr } from "@/lib/occ";
+import { fetchChainFromTastytrade } from "@/lib/chainSources";
 import { fetchFlow, fetchExpirations, fetchOptionChain2 } from "@/lib/marketsnack";
 import { marketsnackConfigured } from "@/lib/marketsnackCookie";
 import { normalizeChain2, nearestExpirations, realGreeksMap } from "@/lib/optionChain2";
@@ -31,7 +37,7 @@ import { gexAnalysis, type TradeLite, type SchwabGreek } from "@/lib/gex";
 import { predictPro } from "@/lib/prediction";
 import { findLevels, type ChainLevel, type FlowLevel } from "@/lib/levels";
 import { buildNewsReport } from "@/lib/news";
-import { fetchIvRankMap, fetchTastytradeGreeks, tastytradeConfigured } from "@/lib/tastytrade";
+import { fetchIvRankMap, fetchQuoteToken, fetchTastytradeGreeks, tastytradeConfigured } from "@/lib/tastytrade";
 import { buildDecisionCard, type FlowTapeRow, type GammaRung } from "@/lib/decisionCard";
 import type { NewsBias } from "@/lib/news";
 import type { Row, DailyBar } from "@/lib/types";
@@ -121,23 +127,40 @@ function schwabIndexSymbol(ticker: string): string | null {
   return map[clean] ?? null;
 }
 
-async function loadDailyBars(ticker: string): Promise<DailyBar[]> {
-  let bars = await fetchDailyBars(ticker).catch(() => [] as DailyBar[]);
-  if (bars.length === 0 && schwabConfigured()) {
-    const idx = schwabIndexSymbol(ticker);
-    if (idx) {
-      try {
-        const raw = await fetchPriceHistory(idx);
-        bars = raw.map((b) => ({
-          time: new Date(b.time).toISOString().slice(0, 10),
-          open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume,
-        }));
-      } catch {
-        // Schwab sin conectar → seguimos sin barras
-      }
+/**
+ * Barras diarias por el cache de disco, NO por Massive directo.
+ *
+ * `fetchDailyBars` es una petición del presupuesto de 5/minuto del plan gratis, y
+ * junto con la ficha de empresa dejaba la tarjeta esperando turno hasta 20 s (el
+ * tope de `massiveLimiter`) en cuanto abrías la segunda del minuto. `cachedDailyBars`
+ * sirve la foto del día y solo paga Massive la primera vez.
+ *
+ * Los índices (SPX/NDX/…) no los cotiza Massive: los da Schwab, y se guardan en el
+ * MISMO almacén para que la segunda apertura tampoco pague la llamada.
+ */
+async function loadDailyBars(ticker: string, now = new Date()): Promise<DailyBar[]> {
+  const bars = await cachedDailyBars(ticker, 365, now);
+  if (bars.length > 0) return bars;
+
+  const idx = schwabIndexSymbol(ticker);
+  if (!idx || !schwabConfigured()) return bars;
+
+  const cached = await loadBars(ticker);
+  if (cached && cached.date === marketDateStr(now) && cached.bars.length > 0) return cached.bars;
+  try {
+    const raw = await fetchPriceHistory(idx);
+    const desdeSchwab: DailyBar[] = raw.map((b) => ({
+      time: new Date(b.time).toISOString().slice(0, 10),
+      open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume,
+    }));
+    if (desdeSchwab.length > 0) {
+      await saveBars(ticker, desdeSchwab, now).catch(() => { /* disco lleno: no es fatal */ });
+      return desdeSchwab;
     }
+  } catch {
+    // Schwab sin conectar → seguimos sin barras
   }
-  return bars;
+  return cached?.bars ?? [];
 }
 
 /** Sesgo del print según la tabla del mandato: buy call / sell put = alcista. */
@@ -181,11 +204,38 @@ export async function GET(request: Request) {
 
         // 1. Empresa + cadena + barras en paralelo.
         send({ type: "step", label: `Buscando ${ticker}…` });
+        // La cadena sale de Tastytrade (streamer, en vivo y sin cuota). NO hay
+        // respaldo a la snapshot paginada de Massive: con el plan gratis son ~20
+        // páginas por ticker a 5 peticiones/minuto, así que no llegaba a terminar —
+        // dejaba la tarjeta colgada minutos para acabar fallando igual. Mejor decirlo
+        // en 2 s y que el dueño reintente.
+        //
+        // Un solo api-quote-token para la cadena y para la cotización de la ficha:
+        // son dos consumidores del MISMO streamer y pedirlo dos veces es un viaje
+        // REST de más.
+        const quoteToken = tastytradeConfigured()
+          ? await fetchQuoteToken().catch(() => undefined)
+          : undefined;
+        const chainDesdeTt = async () => {
+          if (!tastytradeConfigured()) return null;
+          return await fetchChainFromTastytrade(ticker, { quoteToken }).catch(() => null);
+        };
         const [company, chainRes, bars] = await Promise.all([
-          fetchCompany(ticker).catch(() => null),
-          fetchOptionChain(ticker),
+          cachedCompany(ticker, { quoteToken }).catch(() => null),
+          chainDesdeTt(),
           loadDailyBars(ticker),
         ]);
+
+        if (!chainRes) {
+          send({
+            type: "error",
+            message: tastytradeConfigured()
+              ? `Tastytrade no devolvió la cadena de "${ticker}". Reintenta en unos segundos.`
+              : "Tastytrade no está conectado: sin él no hay cadena de opciones.",
+          });
+          controller.close();
+          return;
+        }
 
         const contracts = chainRes.contracts;
         if (contracts.length === 0) {
@@ -221,8 +271,24 @@ export async function GET(request: Request) {
         const structure = structureScore(rows);
 
         // Greeks REALES + IV Rank real (Tastytrade) en paralelo con el flujo.
-        send({ type: "step", label: "Cargando greeks reales (gamma/IV) e IV Rank…" });
-        const greeksPromise = loadRealGreeks(ticker, new Date());
+        //
+        // La cadena de Tastytrade YA trajo gamma/IV de cada contrato por el streamer:
+        // si vinieron, se usan tal cual. Reabrir el WebSocket para los mismos
+        // vencimientos costaba hasta 9 s (el snapshot agota su tope duro cuando los
+        // contratos no tickean, que es lo normal en pre-market). `loadRealGreeks`
+        // sigue ahí para cuando la cadena llegó sin greeks (mercado cerrado del todo).
+        const greeksDeLaCadena = chainRes.greeks;
+        send({
+          type: "step",
+          label:
+            greeksDeLaCadena.size > 0
+              ? `Greeks reales de la cadena (${greeksDeLaCadena.size} contratos) e IV Rank…`
+              : "Cargando greeks reales (gamma/IV) e IV Rank…",
+        });
+        const greeksPromise: Promise<{ map: Map<string, SchwabGreek> | undefined; hint: "tastytrade" | "marketsnack" | "schwab" }> =
+          greeksDeLaCadena.size > 0
+            ? Promise.resolve({ map: greeksDeLaCadena, hint: "tastytrade" as const })
+            : loadRealGreeks(ticker, new Date());
         const ivRankPromise = fetchIvRankMap([ticker]).then((m) => m.get(ticker) ?? null);
 
         // 2. Flujo real (MarketSnack) → scores + trades para el GEX.

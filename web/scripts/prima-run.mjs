@@ -59,6 +59,24 @@ function log(line) {
  * como fallo en vez de quedar en verde.
  */
 function describe(mode, d) {
+  // Pasada de observación: su trabajo es AVISAR PRONTO. Un escaneo que no llega a
+  // ningún símbolo con la ventana abierta es el fallo que hay que cazar aquí,
+  // porque a las 11:45 ya no daría tiempo a renovar la cookie.
+  if (mode === "scan") {
+    const escaneados = d.scanned ?? 0;
+    if (escaneados === 0) {
+      return {
+        exit: 1,
+        line: `FAIL    scan — 0 símbolos escaneados de ${(d.failed ?? 0) + escaneados}: revisa la cookie de MarketSnack / Tastytrade`,
+      };
+    }
+    const top = (d.top ?? []).slice(0, 3).map((t) => `${t.key}×${t.seen}`).join(", ");
+    return {
+      exit: 0,
+      line: `OK      scan pasada ${d.pass} — escaneados ${escaneados}, ${d.candidates ?? 0} candidatos` +
+        (top ? ` · más persistentes: ${top}` : ""),
+    };
+  }
   if (mode === "open") {
     const abiertas = d.opened ?? [];
     const fallos = d.failures ?? [];
@@ -70,19 +88,50 @@ function describe(mode, d) {
         line: `FAIL    open — 0 símbolos escaneados: TODOS fallaron. Motivo: ${fallos[0]}`,
       };
     }
+    // La compuerta de persistencia (≥3 pasadas) va en el resumen SIEMPRE que
+    // actuó: sin esto, "22 candidatos y 0 abiertas" se leería como un fallo del
+    // criterio, cuando en realidad puede ser que ninguno aguantara la ventana.
+    const persist = d.requiredSeen > 0
+      ? ` · persistencia ≥${d.requiredSeen}/${d.watchPasses}: ${d.persistent} pasan, ${d.droppedByPersistence} fuera`
+      : "";
+
+    // Sin ventana de observación NO se abre (decisión del dueño). Se saca como
+    // línea propia y no como un SKIP más: la causa no es el mercado, es que la
+    // tarea de las 10:30 no corrió, y eso hay que arreglarlo antes del martes.
+    if (d.watchPasses === 0 && d.blocked && d.blocked.includes("ventana de observación")) {
+      return {
+        exit: 1,
+        line: "FAIL    open — SIN VENTANA DE OBSERVACIÓN: la tarea Prima-Scan (10:30-11:30) no corrió, así que no se abre nada. Revisa esa tarea.",
+      };
+    }
+    const sinVentana = "";
+
     if (d.blocked) {
       return {
         exit: 0,
-        line: `SKIP    open bloqueado: ${d.blocked} (escaneados ${escaneados}, candidatos ${d.candidates ?? 0})`,
+        line: `SKIP    open bloqueado: ${d.blocked} (escaneados ${escaneados}, candidatos ${d.candidates ?? 0})${persist}${sinVentana}`,
       };
     }
     const detalle = abiertas.length
-      ? abiertas.map((o) => `${o.ticker} ${o.type} ${o.short}/${o.long} ×${o.contracts} $${o.credit}`).join(" · ")
+      ? abiertas
+          .map((o) => {
+            const riesgo = o.riskPct != null ? ` @${(o.riskPct * 100).toFixed(1)}%` : "";
+            return `${o.ticker} ${o.type} ${o.short}/${o.long} ×${o.contracts}${riesgo} $${o.credit} (visto ${o.seenInPasses ?? 0}×)`;
+          })
+          .join(" · ")
       : "ninguna";
+    // Lo que pasó todos los filtros y aun así no cabe en el capital. Va al log
+    // SIEMPRE: un candidato descartado por tamaño y en silencio se lee como si el
+    // motor hubiera preferido otro, y así la cuenta parecía elegir solo índices.
+    const apretados = d.noCaben ?? [];
+    const noCaben = apretados.length
+      ? ` · no caben (${apretados.length}): ` +
+        apretados.map((n) => `${n.ticker} arriesga $${n.riesgo}, harían falta ~$${n.necesita}`).join(", ")
+      : "";
     const cola = fallos.length ? ` · fallos: ${fallos.length}` : "";
     return {
       exit: 0,
-      line: `OK      open — escaneados ${escaneados}, candidatos ${d.candidates ?? 0}, abiertas ${abiertas.length}: ${detalle}${cola}`,
+      line: `OK      open — escaneados ${escaneados}, candidatos ${d.candidates ?? 0}${persist}, abiertas ${abiertas.length}: ${detalle}${noCaben}${cola}${sinVentana}`,
     };
   }
 
@@ -113,9 +162,9 @@ function describe(mode, d) {
 
 async function main() {
   const mode = (process.argv[2] || "").trim().toLowerCase();
-  if (mode !== "open" && mode !== "manage") {
-    log(`ERROR   modo inválido "${process.argv[2] ?? ""}" — usa 'open' o 'manage'`);
-    console.error("Uso: node scripts/prima-run.mjs open|manage");
+  if (mode !== "open" && mode !== "manage" && mode !== "scan") {
+    log(`ERROR   modo inválido "${process.argv[2] ?? ""}" — usa 'scan', 'open' o 'manage'`);
+    console.error("Uso: node scripts/prima-run.mjs scan|open|manage");
     process.exit(2);
   }
 

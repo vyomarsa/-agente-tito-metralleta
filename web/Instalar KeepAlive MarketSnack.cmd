@@ -12,6 +12,14 @@ set "EVERY=15"
 
 echo Creando tarea "%TASK%" (cada %EVERY% min)...
 schtasks /create /tn "%TASK%" /tr "wscript.exe \"%VBS%\"" /sc minute /mo %EVERY% /f
+
+REM  schtasks deja por defecto "no arrancar con bateria" y "parar al pasar a
+REM  bateria". Este keep-alive mantiene viva la cookie de MarketSnack, de la que
+REM  dependen la vista, los screeners y LOS DOS simuladores de paper: si no corre
+REM  un dia sin enchufe, la sesion caduca y todo lo demas falla en cascada (paso
+REM  el 2026-08-17 y se perdio la ventana de apertura semanal). Solo PowerShell
+REM  puede tocar esos flags.
+powershell -NoProfile -Command "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -MultipleInstances IgnoreNew; Set-ScheduledTask -TaskName '%TASK%' -Settings $s | Out-Null"
 if not "%errorlevel%"=="0" (
   echo.
   echo *** No se pudo crear la tarea ^(errorlevel %errorlevel%^). ***

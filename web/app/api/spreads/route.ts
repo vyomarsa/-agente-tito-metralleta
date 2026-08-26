@@ -20,6 +20,7 @@ import {
   dteOf,
   type Chain2Contract,
 } from "@/lib/optionChain2";
+import { cachedMarketCap } from "@/lib/marketCapStore";
 import { fetchCompany } from "@/lib/massive";
 import {
   fetchOptionChain as fetchSchwabChain,
@@ -180,13 +181,16 @@ function toSpreadQuoteFromTt(c: TtContract, now: Date): SpreadQuote {
  * trae greeks/IV/OI/bid-ask/volumen reales. Se pide con ±1 día de holgura y el
  * motor recorta a la banda exacta con dteOf.
  */
-async function fetchWindowQuotesTt(ticker: string, now: Date, quoteToken?: QuoteToken): Promise<SpreadQuote[]> {
-  const { contracts } = await fetchTastytradeChain(ticker, {
+async function fetchWindowQuotesTt(
+  ticker: string, now: Date, quoteToken?: QuoteToken,
+): Promise<{ quotes: SpreadQuote[]; spot: number | null }> {
+  // El spot del subyacente viaja en la MISMA respuesta: no cuesta otra llamada.
+  const { contracts, spot } = await fetchTastytradeChain(ticker, {
     dteMin: Math.max(0, DTE_MIN - 1),
     dteMax: DTE_MAX + 1,
     quoteToken,
   });
-  return contracts.map((c) => toSpreadQuoteFromTt(c, now));
+  return { quotes: contracts.map((c) => toSpreadQuoteFromTt(c, now)), spot };
 }
 
 export async function GET(req: Request) {
@@ -258,10 +262,12 @@ export async function GET(req: Request) {
             send({ type: "step", label: "Tastytrade sin token de streamer → usando la siguiente fuente" });
           }
         }
-        const fetchQuotes =
-          source === "tastytrade" ? (t: string, n: Date) => fetchWindowQuotesTt(t, n, ttToken)
-            : source === "schwab" ? fetchWindowQuotesSchwab
-              : fetchWindowQuotes;
+        // Firma única: {quotes, spot}. Solo Tastytrade trae el spot; las otras dos
+        // mandan null y el escaneo cae a Massive para el precio.
+        const fetchQuotes: (t: string, n: Date) => Promise<{ quotes: SpreadQuote[]; spot: number | null }> =
+          source === "tastytrade" ? (t, n) => fetchWindowQuotesTt(t, n, ttToken)
+            : source === "schwab" ? async (t, n) => ({ quotes: await fetchWindowQuotesSchwab(t, n), spot: null })
+              : async (t, n) => ({ quotes: await fetchWindowQuotes(t, n), spot: null });
 
         // 2. Calendario macro — si no hay, se BLOQUEA (no se opera a ciegas).
         const macro = await cachedMacroCalendar(now);
@@ -293,21 +299,27 @@ export async function GET(req: Request) {
         await mapLimit(SPREAD_UNIVERSE, CONCURRENCY, async (sym) => {
           try {
             // Cadena de la banda 4–7 DTE (delta/IV/OI/bid-ask reales) según la fuente.
-            const quotes = await fetchQuotes(sym.ticker, now);
+            const { quotes, spot: quotedSpot } = await fetchQuotes(sym.ticker, now);
             if (quotes.length === 0) {
               failed++;
               send({ type: "step", label: `${sym.ticker}: sin cadena 4–7 DTE` });
               return;
             }
 
-            // Spot + cap desde Massive (MarketSnack no trae precio del subyacente).
-            const company = await fetchCompany(sym.ticker).catch(() => null);
-            const spot = company?.price ?? null;
+            // El spot viene de Tastytrade en la MISMA llamada de la cadena. Massive
+            // solo se consulta si la fuente no lo dio: con 5 peticiones/minuto, dos
+            // por símbolo × 103 símbolos dejaban el escaneo entero en "sin precio".
+            let spot = quotedSpot != null && quotedSpot > 0 ? quotedSpot : null;
+            if (spot == null) {
+              const company = await fetchCompany(sym.ticker).catch(() => null);
+              spot = company?.price ?? null;
+            }
             if (spot == null || !(spot > 0)) {
               failed++;
               send({ type: "step", label: `${sym.ticker}: sin precio` });
               return;
             }
+            const marketCap = await cachedMarketCap(sym.ticker, now.getTime());
 
             // Volumen 20d de la acción (elegibilidad) + cierres para tendencia/IV Rank.
             const bars = await cachedDailyBars(sym.ticker, 365, now);
@@ -335,7 +347,7 @@ export async function GET(req: Request) {
               bias,
               spot,
               isEtf: sym.isEtf ?? false, // ETFs de índice amplio (SPY/QQQ/IWM) permitidos en venta de prima
-              marketCap: company?.marketCap ?? null,
+              marketCap,
               avgVolume20d: avgVol,
               quotes,
               closes,

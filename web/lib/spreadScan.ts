@@ -17,17 +17,29 @@ import { creditSpreadCandidates, DTE_MIN, DTE_MAX, type SpreadQuote, type Spread
 import { earningsForTicker } from "./earnings";
 import { findLevels } from "./levels";
 import type { MacroEvent } from "./macroCalendar";
+import { cachedMarketCap } from "./marketCapStore";
 import { fetchCompany } from "./massive";
 import type { SpreadSymbol } from "./spreadUniverse";
 import { avg20dVolume } from "./volume";
+
+/**
+ * Cotizaciones de la banda + el spot, si la fuente lo trae en la misma llamada.
+ *
+ * Tastytrade devuelve el subyacente por el MISMO WebSocket que la cadena, así que
+ * el spot sale gratis; MarketSnack no sirve precio de subyacente y manda `null`.
+ */
+export interface QuotesResult {
+  quotes: SpreadQuote[];
+  spot: number | null;
+}
 
 export interface ScanContext {
   now: Date;
   macroEvents: MacroEvent[];
   bias: Bias;
   expert: boolean;
-  /** Cómo se traen las cotizaciones de la banda 4–7 DTE (MarketSnack o Schwab). */
-  fetchQuotes: (ticker: string, now: Date) => Promise<SpreadQuote[]>;
+  /** Cómo se traen las cotizaciones de la banda 4–7 DTE (Tastytrade o MarketSnack). */
+  fetchQuotes: (ticker: string, now: Date) => Promise<QuotesResult>;
 }
 
 export type ScanOutcome =
@@ -38,15 +50,26 @@ export type ScanOutcome =
 export async function scanSymbol(sym: SpreadSymbol, ctx: ScanContext): Promise<ScanOutcome> {
   const { now, macroEvents, bias, expert, fetchQuotes } = ctx;
   try {
-    const quotes = await fetchQuotes(sym.ticker, now);
+    const { quotes, spot: quotedSpot } = await fetchQuotes(sym.ticker, now);
     if (quotes.length === 0) return { ok: false, reason: `sin cadena ${DTE_MIN}–${DTE_MAX} DTE` };
 
-    // Spot y cap salen de Massive: MarketSnack no trae precio del subyacente.
-    const company = await fetchCompany(sym.ticker).catch(() => null);
-    const spot = company?.price ?? null;
+    // El spot viene de Tastytrade, en la MISMA llamada que la cadena. Massive solo
+    // se consulta si la fuente no lo dio: son 2 peticiones por símbolo y con el
+    // plan gratis (5/minuto) los 103 del universo no caben ni en media hora — eso
+    // es lo que dejaba el escaneo entero en "sin precio".
+    let spot = quotedSpot != null && quotedSpot > 0 ? quotedSpot : null;
+    if (spot == null) {
+      const company = await fetchCompany(sym.ticker).catch(() => null);
+      spot = company?.price ?? null;
+    }
     if (spot == null || !(spot > 0)) return { ok: false, reason: "sin precio" };
 
-    const bars = await cachedDailyBars(sym.ticker, 365, now);
+    // La cap solo sirve para el umbral grueso de $10B, así que se cachea en disco
+    // con TTL largo en vez de pedirla a Massive en cada pase.
+    const [marketCap, bars] = await Promise.all([
+      cachedMarketCap(sym.ticker, now.getTime()),
+      cachedDailyBars(sym.ticker, 365, now),
+    ]);
     const closes = bars.map((b) => b.close);
 
     // El strike corto debe quedar del lado protegido de un nivel importante.
@@ -66,7 +89,7 @@ export async function scanSymbol(sym: SpreadSymbol, ctx: ScanContext): Promise<S
         bias,
         spot,
         isEtf: sym.isEtf ?? false,
-        marketCap: company?.marketCap ?? null,
+        marketCap,
         avgVolume20d: avg20dVolume(bars),
         quotes,
         closes,
@@ -106,7 +129,7 @@ export function toSpreadQuote(c: Chain2Contract, now: Date): SpreadQuote {
  * Cadenas de la banda 4–7 DTE desde MarketSnack: una llamada de vencimientos + una
  * de cadena por fecha. El motor elige luego el weekly del frente.
  */
-export async function fetchWindowQuotes(ticker: string, now: Date): Promise<SpreadQuote[]> {
+export async function fetchWindowQuotes(ticker: string, now: Date): Promise<QuotesResult> {
   const expirations = await fetchExpirations(ticker);
   const dates = expirationsInDteWindow(expirations.map((e) => e.date), DTE_MIN, DTE_MAX, now);
   const quotes: SpreadQuote[] = [];
@@ -114,7 +137,8 @@ export async function fetchWindowQuotes(ticker: string, now: Date): Promise<Spre
     const contracts = normalizeChain2(await fetchOptionChain2(ticker, date));
     for (const c of contracts) quotes.push(toSpreadQuote(c, now));
   }
-  return quotes;
+  // MarketSnack no sirve precio de subyacente: el spot lo resuelve quien llame.
+  return { quotes, spot: null };
 }
 
 /**
@@ -144,11 +168,12 @@ export function toSpreadQuoteFromTt(c: TtContract, now: Date): SpreadQuote {
  */
 export async function fetchWindowQuotesTt(
   ticker: string, now: Date, quoteToken?: QuoteToken,
-): Promise<SpreadQuote[]> {
-  const { contracts } = await fetchTastytradeChain(ticker, {
+): Promise<QuotesResult> {
+  // El spot del subyacente viaja en la MISMA respuesta: no cuesta una llamada más.
+  const { contracts, spot } = await fetchTastytradeChain(ticker, {
     dteMin: Math.max(0, DTE_MIN - 1),
     dteMax: DTE_MAX + 1,
     quoteToken,
   });
-  return contracts.map((c) => toSpreadQuoteFromTt(c, now));
+  return { quotes: contracts.map((c) => toSpreadQuoteFromTt(c, now)), spot };
 }

@@ -21,6 +21,12 @@ interface StoredToken {
   updatedAt: number;
   /** último update_id procesado (+1) para no repetir mensajes en getUpdates. */
   offset: number;
+  /**
+   * A dónde ENVIAR las alertas. Separado del token a propósito: el bot puede
+   * estar configurado (para la ingesta del master, que solo RECIBE) sin que las
+   * alertas estén activadas. Sin esto, no se manda nada.
+   */
+  alertChatId?: string;
 }
 
 export type TokenSource = "file" | "env" | "none";
@@ -82,6 +88,18 @@ export async function telegramConfigured(): Promise<boolean> {
 // ---------------------------------------------------------------------------
 // Llamadas a la API de Telegram
 // ---------------------------------------------------------------------------
+
+interface TgChat {
+  id: number;
+  first_name?: string;
+  last_name?: string;
+  username?: string;
+  title?: string;
+}
+interface TgUpdate {
+  update_id: number;
+  message?: { chat?: TgChat };
+}
 
 interface TgResponse<T> {
   ok: boolean;
@@ -212,5 +230,92 @@ export async function downloadPhoto(fileId: string): Promise<Buffer | null> {
     return Buffer.from(await res.arrayBuffer());
   } catch {
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ALERTAS SALIENTES
+//
+// Hasta 2026-08-24 el bot solo RECIBÍA (ingesta del master). Esto añade el envío,
+// que el dueño pidió para enterarse de las posiciones que abre el agente sin
+// tener que mirar la pantalla.
+//
+// Va con chat de destino EXPLÍCITO y guardado aparte del token: tener el bot
+// configurado no debe implicar que empiece a escribirle a alguien. Mientras no
+// haya `alertChatId`, `sendAlert` no manda nada y lo dice.
+// ---------------------------------------------------------------------------
+
+/** Chat al que van las alertas, o null si no se ha conectado. */
+export async function getAlertChatId(): Promise<string | null> {
+  const rec = await readStored();
+  return rec?.alertChatId ?? null;
+}
+
+export async function saveAlertChatId(chatId: string | null): Promise<void> {
+  const rec = await readStored();
+  if (!rec) throw new Error("No hay bot de Telegram configurado.");
+  await writeStored({ ...rec, alertChatId: chatId ?? undefined, updatedAt: Date.now() });
+}
+
+export interface DiscoveredChat {
+  chatId: string;
+  name: string;
+}
+
+/**
+ * Busca a quién escribirle, leyendo los mensajes pendientes del bot.
+ *
+ * OJO — usa el offset GUARDADO y NO lo avanza. `getUpdates?offset=N` confirma
+ * (y borra) todo lo anterior a N, así que pasar el offset ya almacenado no
+ * destruye nada nuevo; guardar uno mayor sí se comería mensajes que la ingesta
+ * del master todavía no ha procesado.
+ */
+export async function discoverChats(): Promise<DiscoveredChat[]> {
+  const token = await getToken();
+  if (!token) return [];
+  const rec = await readStored();
+  const updates = await tgCall<TgUpdate[]>(token, "getUpdates", {
+    offset: String(rec?.offset ?? 0),
+    limit: "100",
+  });
+  if (!updates) return [];
+
+  const vistos = new Map<string, string>();
+  for (const u of updates) {
+    const chat = u.message?.chat;
+    if (!chat?.id) continue;
+    const nombre = [chat.first_name, chat.last_name].filter(Boolean).join(" ")
+      || chat.username || chat.title || String(chat.id);
+    vistos.set(String(chat.id), nombre);
+  }
+  return [...vistos.entries()].map(([chatId, name]) => ({ chatId, name }));
+}
+
+export interface SendResult {
+  ok: boolean;
+  /** Por qué no se mandó (vacío si se mandó). */
+  reason: string;
+}
+
+/**
+ * Manda una alerta. Best-effort a propósito: NUNCA debe tumbar al que la llama.
+ * Una posición que se abre bien pero cuya notificación falla sigue siendo una
+ * posición abierta bien.
+ */
+export async function sendAlert(text: string): Promise<SendResult> {
+  try {
+    const token = await getToken();
+    if (!token) return { ok: false, reason: "sin token de Telegram" };
+    const chatId = await getAlertChatId();
+    if (!chatId) return { ok: false, reason: "alertas sin conectar (falta chat de destino)" };
+    const res = await tgCall<unknown>(token, "sendMessage", {
+      chat_id: chatId,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: "true",
+    });
+    return res == null ? { ok: false, reason: "Telegram rechazó el envío" } : { ok: true, reason: "" };
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : "error inesperado" };
   }
 }

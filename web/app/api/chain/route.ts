@@ -3,11 +3,12 @@
 import { countExpirations, sortByOpenInterestDesc, toRow } from "@/lib/compute";
 import { structureScore } from "@/lib/structure";
 import { saveChainSnapshot, type ChainSnapshot } from "@/lib/chainStore";
-import { fetchCompany, fetchOptionChain, MassiveError } from "@/lib/massive";
-import { fetchExpirations, fetchOptionChain2 } from "@/lib/marketsnack";
-import { normalizeChain2, nearestExpirations } from "@/lib/optionChain2";
-import { estimateSpotFromChain } from "@/lib/zerodte";
-import type { ChainEvent, ChainMeta, Row } from "@/lib/types";
+import { fetchOptionChain, MassiveError } from "@/lib/massive";
+import { fetchChainFromTastytrade, fetchChainFromMarketSnack, fetchChainFromSchwab } from "@/lib/chainSources";
+import { cachedCompany } from "@/lib/companyStore";
+import { tastytradeConfigured } from "@/lib/tastytrade";
+import { schwabConfigured } from "@/lib/schwab";
+import type { ChainEvent, ChainMeta, RawContract, Row } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,13 +36,89 @@ export async function GET(request: Request) {
         }
 
         send({ type: "step", label: `Buscando información de ${ticker}…` });
-        const company = await fetchCompany(ticker);
+        // `cachedCompany` sirve la referencia del disco y la cotización de Tastytrade.
+        // Antes esto era `fetchCompany` contra Massive y costaba **16,5 s medidos**
+        // solo en esperar turno de cuota: más que descargar la cadena entera.
+        const company = await cachedCompany(ticker);
         send({ type: "company", company });
 
-        send({ type: "step", label: "Conectando con Massive…" });
+        // Cascada: Tastytrade → MarketSnack → Schwab → Massive.
+        // Con el plan gratis de Massive (5 peticiones/minuto) la snapshot paginada
+        // (~20 páginas para AAPL) no puede terminar, así que Massive es el último recurso.
+        let contracts: RawContract[] = [];
+        let underlyingPrice: number | null = null;
+        let pages = 1;
+        let truncated = false;
+        let fuente: "tastytrade" | "marketsnack" | "schwab" | "massive" = "tastytrade";
 
-        const { contracts, underlyingPrice: massivePrice, pages, truncated } =
-          await fetchOptionChain(ticker, {
+        // 1. Tastytrade
+        if (tastytradeConfigured()) {
+          send({ type: "step", label: `Descargando cadena de ${ticker} desde Tastytrade…` });
+          try {
+            const tt = await fetchChainFromTastytrade(ticker);
+            if (tt.contracts.length > 0) {
+              contracts = tt.contracts;
+              underlyingPrice = tt.underlyingPrice;
+              send({
+                type: "step",
+                label: `Cadena de ${ticker} lista (Tastytrade)`,
+                detail: `${contracts.length} contratos · ${tt.expirations} vencimientos`,
+              });
+            }
+          } catch {
+            send({ type: "step", label: "Tastytrade no respondió; probando MarketSnack…" });
+          }
+        }
+
+        // 2. MarketSnack
+        if (contracts.length === 0) {
+          fuente = "marketsnack";
+          send({ type: "step", label: `Descargando cadena de ${ticker} desde MarketSnack…` });
+          try {
+            const ms = await fetchChainFromMarketSnack(ticker);
+            if (ms.contracts.length > 0) {
+              contracts = ms.contracts;
+              underlyingPrice = ms.underlyingPrice;
+              send({
+                type: "step",
+                label: `Cadena de ${ticker} lista (MarketSnack)`,
+                detail: `${contracts.length} contratos · ${ms.expirations} vencimientos`,
+              });
+            } else {
+              send({ type: "step", label: "MarketSnack sin contratos; probando Schwab…" });
+            }
+          } catch {
+            send({ type: "step", label: "MarketSnack no respondió; probando Schwab…" });
+          }
+        }
+
+        // 3. Schwab
+        if (contracts.length === 0 && schwabConfigured()) {
+          fuente = "schwab";
+          send({ type: "step", label: `Descargando cadena de ${ticker} desde Schwab…` });
+          try {
+            const sw = await fetchChainFromSchwab(ticker);
+            if (sw.contracts.length > 0) {
+              contracts = sw.contracts;
+              underlyingPrice = sw.underlyingPrice;
+              send({
+                type: "step",
+                label: `Cadena de ${ticker} lista (Schwab)`,
+                detail: `${contracts.length} contratos · ${sw.expirations} vencimientos`,
+              });
+            } else {
+              send({ type: "step", label: "Schwab sin contratos; probando Massive…" });
+            }
+          } catch {
+            send({ type: "step", label: "Schwab no respondió; probando Massive…" });
+          }
+        }
+
+        // 4. Massive (último recurso)
+        if (contracts.length === 0) {
+          fuente = "massive";
+          send({ type: "step", label: "Conectando con Massive…" });
+          const r = await fetchOptionChain(ticker, {
             onPage: (page, accumulated) => {
               send({
                 type: "step",
@@ -50,34 +127,16 @@ export async function GET(request: Request) {
               });
             },
           });
-
-        if (contracts.length === 0) {
-          send({ type: "error", message: `Sin contratos para "${ticker}".` });
-          controller.close();
-          return;
+          contracts = r.contracts;
+          underlyingPrice = r.underlyingPrice;
+          pages = r.pages;
+          truncated = r.truncated;
         }
 
-        // Índices como SPX: Massive no cotiza el subyacente (necesitaría `I:SPX`,
-        // fuera del plan). Derivamos el spot por paridad put-call de la cadena de
-        // MarketSnack, igual que la vista 0DTE. Degrada con gracia: sin cookie o si
-        // MarketSnack falla, queda null y el dashboard sigue como hasta ahora.
-        let underlyingPrice = massivePrice;
-        if (underlyingPrice == null) {
-          send({ type: "step", label: `Massive no cotiza ${ticker}; derivando spot de MarketSnack…` });
-          try {
-            const exps = await fetchExpirations(ticker);
-            const front = nearestExpirations(exps.map((e) => e.date), 1, new Date())[0];
-            if (front) {
-              const ms = normalizeChain2(await fetchOptionChain2(ticker, front));
-              const spot = estimateSpotFromChain(ms);
-              if (spot && spot > 0) {
-                underlyingPrice = spot;
-                send({ type: "step", label: `Spot de ${ticker} por paridad: ${spot.toFixed(2)}` });
-              }
-            }
-          } catch {
-            // sin cookie o fallo de MarketSnack → seguimos sin spot
-          }
+        if (contracts.length === 0) {
+          send({ type: "error", message: `Sin contratos para "${ticker}" en ninguna fuente.` });
+          controller.close();
+          return;
         }
 
         let rows: Row[] = contracts.map(toRow);
@@ -118,7 +177,9 @@ export async function GET(request: Request) {
         const message =
           err instanceof MassiveError
             ? err.message
-            : "Error inesperado al consultar Massive.";
+            : err instanceof Error
+              ? err.message
+              : "Error inesperado al cargar la cadena.";
         send({ type: "error", message });
       } finally {
         controller.close();

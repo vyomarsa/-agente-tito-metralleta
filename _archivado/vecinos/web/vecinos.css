@@ -1,0 +1,97 @@
+/* ── Contratos Vecinos 2.0 (/vecinos) ─────────────────────────────────── */
+/* Reusa el esqueleto del 0DTE (.z-page/.z-tabs/.z-head/.z-grid…); aquí solo
+   viven las piezas propias: el veredicto, los objetivos y el vecindario. */
+
+.vec-decision { border-left: 4px solid var(--border); }
+.vec-decision.go { border-left-color: var(--green); }
+.vec-decision.wait { border-left-color: var(--amber); }
+.vec-decision.flat { border-left-color: var(--muted); }
+
+.vec-dec-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.vec-dec-verdict { font-size: 26px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; }
+.vec-dec-verdict.go { color: var(--green-dark); }
+.vec-dec-verdict.wait { color: var(--amber-text, var(--amber)); }
+.vec-dec-verdict.flat { color: var(--muted); }
+.vec-dec-dir { font-size: 20px; font-weight: 800; padding: 6px 16px; border-radius: 999px; background: var(--chip-bg); }
+.vec-dec-dir.up { color: var(--green-dark); background: var(--green-bg); }
+.vec-dec-dir.down { color: var(--red-strong); background: var(--red-bg); }
+.vec-dec-dir.flat { color: var(--muted); }
+.vec-dec-summary { margin: 12px 0 0; font-size: 14px; line-height: 1.55; color: var(--text-2); }
+
+.vec-sibling { margin-top: 12px; font-size: 12px; font-weight: 700; padding: 6px 12px; border-radius: 8px; background: var(--chip-bg); color: var(--text-2); }
+.vec-sibling.confirma { background: var(--green-bg); color: var(--green-strong); }
+.vec-sibling.contradice { background: var(--red-bg); color: var(--red-strong); }
+
+.vec-warn {
+  margin-top: 10px; font-size: 12px; line-height: 1.5; padding: 8px 12px;
+  border-radius: 8px; background: var(--amber-bg); color: var(--amber-text, var(--amber));
+}
+
+.vec-hint { font-size: 12px; color: var(--muted); line-height: 1.5; margin-bottom: 12px; }
+
+/* objetivos */
+.vec-targets { display: flex; flex-direction: column; gap: 12px; }
+.vec-target { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--panel-2); }
+.vec-target.iman { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.vec-target.ruptura { border-style: dashed; }
+.vec-t-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.vec-t-strike { font-size: 15px; font-weight: 700; }
+.vec-t-strike em { font-style: normal; font-size: 12px; font-weight: 600; color: var(--muted); margin-left: 6px; }
+.vec-t-prob { font-size: 17px; font-weight: 800; }
+.vec-t-bar { height: 6px; border-radius: 999px; background: var(--track); margin: 8px 0 6px; overflow: hidden; }
+.vec-t-fill { display: block; height: 100%; background: var(--accent); }
+.vec-target.ruptura .vec-t-fill { background: var(--red-soft); }
+.vec-t-note { font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+
+.vec-src {
+  display: inline-block; font-size: 9.5px; font-weight: 800; text-transform: uppercase;
+  letter-spacing: .04em; padding: 1px 6px; border-radius: 5px; margin-right: 6px;
+  background: var(--neutral-bg); color: var(--neutral-text);
+}
+.vec-src.flujo { background: var(--green-bg-2); color: var(--green-strong); }
+.vec-src.estructura { background: var(--amber-bg); color: var(--amber-text, var(--amber)); }
+
+/* vecindario */
+/* La tarjeta se mide a sí misma (container query), no al viewport: vive dentro de
+   .z-grid, así que su ancho depende de la columna, no de la ventana. Con un media
+   query la columna "Lectura" se quedaba en 0px en pantallas de ~960px. */
+.vec-hood { container-type: inline-size; }
+.vec-hood-cols,
+.vec-hrow {
+  display: grid; grid-template-columns: 68px 84px 84px 70px minmax(0, 1fr);
+  gap: 8px; align-items: center;
+}
+.vec-hood-cols { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); padding: 0 6px 6px; }
+.vec-hood-rows { display: flex; flex-direction: column; }
+.vec-hrow { padding: 5px 6px; border-top: 1px solid var(--border-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
+.vec-hrow.magnet { background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 6px; }
+.vec-hrow.ninguna { opacity: .55; }
+.vec-hstrike { font-weight: 700; }
+.vec-hnet { text-align: right; color: var(--muted); }
+.vec-hnet.up { color: var(--green-dark); font-weight: 700; }
+.vec-hnet.down { color: var(--red-strong); font-weight: 700; }
+.vec-hbias { position: relative; height: 16px; display: flex; align-items: center; }
+.vec-hbar { position: absolute; left: 0; height: 8px; border-radius: 3px; opacity: .35; }
+.vec-hbar.up { background: var(--green); }
+.vec-hbar.down { background: var(--red); }
+.vec-hbias-num { position: relative; font-size: 11px; font-weight: 800; }
+.vec-hstruct { font-size: 10px; font-weight: 700; white-space: nowrap; }
+.vec-hstruct.up { color: var(--green-dark); }
+.vec-hstruct.down { color: var(--red-strong); }
+.vec-hnone { color: var(--faint); }
+.vec-hread { font-size: 11px; color: var(--muted); line-height: 1.35; }
+
+/* explicación del método */
+.vec-how > summary { cursor: pointer; font-size: 13px; font-weight: 700; color: var(--text-2); }
+.vec-how ol { margin: 12px 0 0; padding-left: 20px; }
+.vec-how li { font-size: 12.5px; line-height: 1.6; color: var(--text-2); margin-bottom: 8px; }
+.vec-how-note { font-size: 11.5px; color: var(--muted); line-height: 1.5; margin: 10px 0 0; }
+
+/* Tarjeta estrecha: la lectura baja a su propia línea en vez de aplastarse. */
+@container (max-width: 540px) {
+  .vec-hood-cols,
+  .vec-hrow { grid-template-columns: 62px minmax(0, 1fr) minmax(0, 1fr) 62px; }
+  .vec-col-read { display: none; }
+  .vec-hread { grid-column: 1 / -1; padding: 2px 0 4px 4px; }
+  .vec-hrow { padding-bottom: 7px; }
+}

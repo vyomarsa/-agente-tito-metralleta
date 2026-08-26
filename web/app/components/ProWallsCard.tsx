@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import type { StructureScore } from "@/lib/structure";
 import type { GexAnalysis, GexNode } from "@/lib/gex";
-import type { TfBar } from "@/lib/types";
 import type { LevelsReport } from "@/lib/levels";
 import { conePoints, expectedMove, levelProbabilities, predictionPath } from "@/lib/expectedMove";
 import PriceChart, { type ChartTarget } from "./chart/PriceChart";
+import { useBars } from "./useBars";
 import { money, px } from "../format";
 
 /** Bandas del heatmap: dorado = muro de calls · morado = muro de puts. */
@@ -48,17 +48,10 @@ export default function ProWallsCard({
   horizonDays: number;
   levels?: LevelsReport | null;
 }) {
-  const [bars, setBars] = useState<TfBar[] | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setBars(null);
-    fetch(`/api/bars?ticker=${encodeURIComponent(ticker)}&tf=1y`)
-      .then((r) => r.json())
-      .then((d) => { if (!cancelled) setBars(Array.isArray(d.bars) ? d.bars.slice(-90) : []); })
-      .catch(() => { if (!cancelled) setBars([]); });
-    return () => { cancelled = true; };
-  }, [ticker]);
+  // Mismas barras que SimpleChart (tf=1y): `useBars` las comparte en una sola
+  // petición en vez de gastar dos turnos del presupuesto de Massive.
+  const { bars: allBars, stale, error, retrying } = useBars(ticker, "1y");
+  const bars = useMemo(() => (allBars ? allBars.slice(-90) : null), [allBars]);
 
   const spot = gex?.spot ?? 0;
   const iv = gex?.iv ?? 0.4;
@@ -177,7 +170,12 @@ export default function ProWallsCard({
         <div className="pro-chart gex-chart-col">
           {bars === null && <div style={{ padding: 20, color: "#5c6a85", fontSize: 12 }}>Cargando velas…</div>}
           {bars !== null && bars.length === 0 && (
-            <div style={{ padding: 20, color: "#5c6a85", fontSize: 12 }}>Sin datos de precio.</div>
+            <div style={{ padding: 20, color: "#5c6a85", fontSize: 12 }}>
+              {error ? `${error}${retrying ? " Reintentando solo…" : ""}` : "Sin datos de precio."}
+            </div>
+          )}
+          {stale && bars !== null && bars.length > 0 && (
+            <div className="chart-stale">⚡ Velas de la última carga buena: {error}</div>
           )}
           {bars !== null && bars.length > 0 && (
             <PriceChart

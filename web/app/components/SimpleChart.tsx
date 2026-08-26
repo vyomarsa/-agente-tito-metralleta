@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import type { TfBar } from "@/lib/types";
+import { useMemo } from "react";
 import type { LevelsReport } from "@/lib/levels";
 import { conePoints, predictionPath } from "@/lib/expectedMove";
 import PriceChart, { type ChartSeries, type ChartTarget } from "./chart/PriceChart";
+import { useBars } from "./useBars";
 import { useTheme } from "./useTheme";
 
 export interface Scenarios { bear: number; base: number; bull: number }
@@ -62,18 +62,10 @@ export default function SimpleChart({
   scenarios: Scenarios | null;
   levels: LevelsReport | null;
 }) {
-  const [bars, setBars] = useState<TfBar[] | null>(null);
   const theme = useTheme();
-
-  useEffect(() => {
-    let cancelled = false;
-    setBars(null);
-    fetch(`/api/bars?ticker=${encodeURIComponent(ticker)}&tf=1y`)
-      .then((r) => r.json())
-      .then((d) => { if (!cancelled) setBars(Array.isArray(d.bars) ? d.bars.slice(-70) : []); })
-      .catch(() => { if (!cancelled) setBars([]); });
-    return () => { cancelled = true; };
-  }, [ticker]);
+  // Las mismas barras que pide ProWallsCard: `useBars` comparte la petición.
+  const { bars: allBars, stale, error, retrying } = useBars(ticker, "1y");
+  const bars = useMemo(() => (allBars ? allBars.slice(-70) : null), [allBars]);
 
   const cone = useMemo(
     () => (spot > 0 ? conePoints(spot, iv, horizonDays, 24) : []),
@@ -122,7 +114,19 @@ export default function SimpleChart({
       <div className="simple-chart-area">
         {bars === null && <div className="simple-chart-loading">Cargando gráfica…</div>}
         {bars !== null && bars.length === 0 && (
-          <div className="simple-chart-loading">Sin datos de precio para {ticker}.</div>
+          <div className="simple-chart-loading">
+            {error ? (
+              <>
+                {error}
+                {retrying && " Reintentando solo…"}
+              </>
+            ) : (
+              <>Sin datos de precio para {ticker}.</>
+            )}
+          </div>
+        )}
+        {stale && bars !== null && bars.length > 0 && (
+          <div className="chart-stale">⚡ Velas de la última carga buena: {error}</div>
         )}
         {bars !== null && bars.length > 0 && (
           <PriceChart

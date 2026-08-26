@@ -2,6 +2,7 @@
 
 import type { CompanyInfo, DailyBar, RawContract, TfBar } from "./types";
 import { marketDateStr } from "./occ";
+import { acquireSlot, MassiveBudgetError, penalize } from "./massiveLimiter";
 
 const BASE_URL = "https://api.massive.com";
 
@@ -16,11 +17,19 @@ const EXCHANGE_NAMES: Record<string, string> = {
 
 export class MassiveError extends Error {
   status?: number;
-  constructor(message: string, status?: number) {
+  /** Solo en errores de cuota (429): ms que conviene esperar antes de reintentar. */
+  retryAfterMs?: number;
+  constructor(message: string, status?: number, retryAfterMs?: number) {
     super(message);
     this.name = "MassiveError";
     this.status = status;
+    this.retryAfterMs = retryAfterMs;
   }
+}
+
+/** `true` si el error es de cuota agotada (no de datos ni de credenciales). */
+export function isRateLimited(err: unknown): boolean {
+  return err instanceof MassiveError && err.status === 429;
 }
 
 function apiKey(): string {
@@ -54,7 +63,6 @@ export async function fetchOptionChain(
   ticker: string,
   progress: FetchProgress = {},
 ): Promise<ChainResult> {
-  const key = apiKey();
   const limit = maxPages();
   const clean = ticker.trim().toUpperCase();
   if (!clean) throw new MassiveError("Ticker vacío.");
@@ -68,10 +76,7 @@ export async function fetchOptionChain(
 
   while (url) {
     page += 1;
-    const res: Response = await fetch(url, {
-      headers: { Authorization: `Bearer ${key}` },
-      cache: "no-store",
-    });
+    const res: Response = await massiveFetch(url, clean);
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
@@ -126,12 +131,67 @@ interface StockSnapshot {
   prevDay?: { c?: number };
 }
 
-async function getJson<T>(path: string): Promise<T | null> {
+/** Espera máxima que aceptamos entre reintentos dentro de una misma petición. */
+const MAX_RETRY_WAIT_MS = 8_000;
+const MAX_RETRIES = 2;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** `Retry-After` viene en segundos o como fecha HTTP; si no viene, 20 s. */
+function retryAfterMs(res: Response): number {
+  const raw = res.headers.get("retry-after");
+  if (raw) {
+    const secs = Number(raw);
+    if (Number.isFinite(secs) && secs >= 0) return secs * 1000;
+    const at = Date.parse(raw);
+    if (Number.isFinite(at)) return Math.max(0, at - Date.now());
+  }
+  return 20_000;
+}
+
+/**
+ * ÚNICO punto de salida hacia Massive. Todas las llamadas pasan por aquí para
+ * que el regulador de caudal (5 req/min en el plan gratis) las vea y las ponga
+ * en cola. Si aun así llega un 429 —otro proceso gastando la misma key— se
+ * castiga el cubo entero y se reintenta, siempre que la espera sea corta.
+ *
+ * Nunca devuelve una respuesta 429: o consigue datos o lanza `MassiveError`
+ * con `status: 429` y `retryAfterMs`, para que quien llama sirva cache viejo
+ * o le diga al usuario cuándo volver.
+ */
+export async function massiveFetch(url: string, ticker = ""): Promise<Response> {
   const key = apiKey();
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { Authorization: `Bearer ${key}` },
-    cache: "no-store",
-  });
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await acquireSlot();
+    } catch (err) {
+      if (err instanceof MassiveBudgetError) {
+        throw new MassiveError(err.message, 429, err.retryAfterMs);
+      }
+      throw err;
+    }
+
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${key}` },
+      cache: "no-store",
+    });
+    if (res.status !== 429) return res;
+
+    // 429 pese a la cola: alguien más gasta la key. Frena a todo el proceso.
+    const wait = retryAfterMs(res);
+    penalize(wait);
+    if (attempt >= MAX_RETRIES || wait > MAX_RETRY_WAIT_MS) {
+      const body = await res.text().catch(() => "");
+      throw new MassiveError(describeStatus(429, ticker, body), 429, wait);
+    }
+    await sleep(wait);
+  }
+}
+
+async function getJson<T>(path: string): Promise<T | null> {
+  const res = await massiveFetch(`${BASE_URL}${path}`);
   if (res.status === 404) return null;
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -243,7 +303,9 @@ export async function fetchDailyBars(ticker: string, days = 365): Promise<DailyB
     `/v2/aggs/ticker/${encodeURIComponent(clean)}/range/1/day/` +
     `${toDateStr(from.getTime())}/${toDateStr(to.getTime())}` +
     `?adjusted=true&sort=asc&limit=500`;
-  const json = await getJson<{ results?: AggBar[] }>(path).catch(() => null);
+  // Sin `.catch`: un 429 tiene que llegar a quien llama para que sirva cache
+  // viejo en vez de pintar una gráfica vacía sin explicación.
+  const json = await getJson<{ results?: AggBar[] }>(path);
   const bars = json?.results ?? [];
   return bars.map((b) => ({
     time: toDateStr(b.t),
@@ -269,7 +331,9 @@ export async function fetchBars(
     `/v2/aggs/ticker/${encodeURIComponent(clean)}/range/${multiplier}/${timespan}/` +
     `${toDateStr(from.getTime())}/${toDateStr(to.getTime())}` +
     `?adjusted=true&sort=asc&limit=50000`;
-  const json = await getJson<{ results?: AggBar[] }>(path).catch(() => null);
+  // Sin `.catch`: ver la nota de fetchDailyBars. Tragarse el 429 aquí es lo que
+  // dejaba la gráfica en blanco sin decir por qué.
+  const json = await getJson<{ results?: AggBar[] }>(path);
   const bars = json?.results ?? [];
   return bars.map((b) => ({
     time: Math.floor(b.t / 1000),
@@ -284,14 +348,13 @@ export async function fetchBars(
 export async function fetchLogoImage(
   ticker: string,
 ): Promise<{ data: ArrayBuffer; contentType: string } | null> {
-  const key = apiKey();
   const clean = ticker.trim().toUpperCase();
   const details = await getJson<{ results?: TickerDetails }>(
     `/v3/reference/tickers/${encodeURIComponent(clean)}`,
   ).catch(() => null);
   const url = details?.results?.branding?.logo_url ?? details?.results?.branding?.icon_url;
   if (!url) return null;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
+  const res = await massiveFetch(url, clean);
   if (!res.ok) return null;
   const contentType = res.headers.get("content-type") ?? "image/png";
   return { data: await res.arrayBuffer(), contentType };

@@ -100,6 +100,31 @@ export function unrealizedPnl(t: PaperTrade): number {
   return (t.currentPrice - t.entryPrice) * 100 * t.contracts;
 }
 
+/**
+ * Valor de la opción AL VENCIMIENTO: solo intrínseco, el temporal ya no existe.
+ *
+ * Es la ÚNICA excepción a "sin cotización no se pone precio", y es legítima porque
+ * aquí el precio no se estima: se deduce. Una call vale lo que cuesta ejercerla y
+ * ni un centavo más, y si está fuera del dinero vale exactamente 0 — que es un
+ * resultado real (pierdes toda la prima), no un dato ausente.
+ *
+ * OJO — solo vale EL DÍA DEL VENCIMIENTO. Aplicarlo a un cierre a media vida
+ * ignoraría el valor temporal y subestimaría la prima, que es inventar en la
+ * dirección contraria. Por eso `evaluate` solo lo usa en la rama de expiración.
+ *
+ * `settleUnderlying` debe ser el cierre del DÍA en que venció, no el precio de
+ * hoy: un contrato que murió fuera del dinero el viernes no revive porque el
+ * lunes el subyacente suba.
+ */
+export function intrinsicValue(
+  optionType: OptionType,
+  strike: number,
+  settleUnderlying: number,
+): number {
+  const bruto = optionType === "call" ? settleUnderlying - strike : strike - settleUnderlying;
+  return Math.max(0, Math.round(bruto * 10000) / 10000);
+}
+
 /** Fecha de mercado (ET) YYYY-MM-DD para comparar con el vencimiento. */
 function marketDateStr(now: Date): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -160,6 +185,13 @@ export function evaluate(
   u: number | null,
   mark: number | null,
   now: Date,
+  /**
+   * Cierre del subyacente el DÍA DEL VENCIMIENTO, para liquidar a intrínseco lo que
+   * ya venció. `null` si no se pudo averiguar: entonces se cierra sin precio, como
+   * antes. Lo trae la ruta (`/api/trades/refresh`) porque exige red; el motor sigue
+   * siendo puro.
+   */
+  settleUnderlying: number | null = null,
 ): PaperTrade {
   if (isClosed(trade)) return trade;
   const nowIso = now.toISOString();
@@ -196,7 +228,43 @@ export function evaluate(
   // status === "activa"
   const peak = mark != null ? Math.max(t.peakPrice ?? t.entryPrice ?? mark, mark) : t.peakPrice;
   const active: PaperTrade = { ...t, peakPrice: peak };
-  const exitMark = mark ?? active.currentPrice;
+  /**
+   * Precio de salida: la prima RECIÉN cotizada, o `null` si no la hay.
+   *
+   * Antes caía a `currentPrice`, que sin re-cotización es la prima de entrada — y
+   * salir al mismo precio al que entraste da P&L exactamente $0. Como el win rate
+   * se contaba por el signo del P&L, un acierto real quedaba en "ni ganada ni
+   * perdida": el 2026-08-24 había 12 operaciones decididas y el resumen marcaba
+   * 0W · 0L. Peor aún, "salió a $17.75" era un dato INVENTADO en el libro.
+   *
+   * Ahora un cierre sin prima se anota SIN precio: el desenlace de la idea lo
+   * decide el subyacente (que es donde vive el plan) y ese sí se conoce; lo que no
+   * se sabe es cuánto dinero se hizo, y eso se dice en vez de rellenarlo con cero.
+   * Misma norma que el motor de venta de prima: sin precio no se inventa un precio.
+   */
+  const exitMark = mark;
+
+  /**
+   * El VENCIMIENTO se comprueba ANTES que objetivo y stop, y el orden importa.
+   *
+   * `isExpired` compara la fecha de MERCADO, así que solo es cierto a partir del
+   * día SIGUIENTE: durante toda la sesión del vencimiento el objetivo y el stop
+   * siguen mandando, como debe ser. Pero una vez muerto el contrato, cerrarlo por
+   * "objetivo" con el precio de la sesión siguiente sería apuntarse una ganancia
+   * de un contrato que ya no existía cuando el subyacente llegó ahí. Después del
+   * vencimiento solo queda liquidar.
+   *
+   * El intrínseco MANDA sobre `mark`: para un contrato ya vencido, cualquier
+   * cotización que llegue es de otro contrato o está rancia. Sin precio de
+   * liquidación se cierra SIN precio, en vez de adivinar con otro día.
+   */
+  if (isExpired(active, now)) {
+    const liquidacion =
+      settleUnderlying != null
+        ? intrinsicValue(active.optionType, active.strike, settleUnderlying)
+        : exitMark;
+    return { ...close("expirada", "expirada", liquidacion), peakPrice: peak };
+  }
 
   if (u != null && hitTarget(active, u)) return close("ganada", "objetivo", exitMark);
   if (u != null && hitStop(active, u)) return close("perdida", "stop", exitMark);
@@ -211,21 +279,56 @@ export function evaluate(
     // Cierra al nivel asegurado (bloquea la fracción del avance), no a la prima actual.
     return { ...close("ganada", "trailing", trailStopPrice(active.entryPrice, peak)) , peakPrice: peak };
   }
-  if (isExpired(active, now)) return { ...close("expirada", "expirada", exitMark), peakPrice: peak };
   return active;
 }
 
+/** ¿El cierre tiene los dos precios y por tanto un P&L real? */
+export function isPriced(t: PaperTrade): boolean {
+  return t.entryPrice != null && t.exitPrice != null;
+}
+
+export type Outcome = "acierto" | "fallo" | "sin_decidir";
+
+/**
+ * Desenlace de un trade para el win rate. Se decide por el MOTIVO del cierre, no
+ * por el signo del P&L.
+ *
+ * El cambio importa: el plan (gatillo, objetivo, stop) vive en el SUBYACENTE, y es
+ * ahí donde se sabe si la idea acertó. La prima solo dice cuánto dinero hizo. Con
+ * el criterio viejo —acierto = P&L > 0— cualquier cierre sin prima fresca daba
+ * P&L 0 y desaparecía del marcador: el 2026-08-24 había 10 objetivos y 2 stops
+ * alcanzados, y la pantalla decía "0W · 0L · win rate —".
+ *
+ * Lo que NUNCA cuenta es lo que no llegó a entrar (caducadas y vencidas sin cruzar
+ * el gatillo): no fueron ideas fallidas, fueron ideas que no se probaron.
+ */
+export function outcomeOf(t: PaperTrade): Outcome {
+  if (!isClosed(t)) return "sin_decidir";
+  if (t.entryPrice == null) return "sin_decidir"; // nunca cruzó el gatillo
+  if (t.closeReason === "objetivo" || t.closeReason === "trailing") return "acierto";
+  if (t.closeReason === "stop") return "fallo";
+  // "expirada" estando activa y "manual" no las decide el plan: las decide el dinero,
+  // y solo si hay dinero que mirar.
+  if (!isPriced(t)) return "sin_decidir";
+  const pnl = realizedPnl(t);
+  return pnl > 0 ? "acierto" : pnl < 0 ? "fallo" : "sin_decidir";
+}
+
 export interface PaperSummary {
-  closedPnl: number; // P&L neto de lo cerrado
+  closedPnl: number; // P&L neto de lo cerrado CON precio
   wins: number;
   losses: number;
   winRatePct: number | null;
   pending: number;
   active: number;
   openUnrealized: number; // suma del P&L no realizado de los activos
+  /** Cierres que entraron pero se quedaron sin prima de salida: su P&L no se conoce. */
+  unpriced: number;
+  /** Cierres que sí tienen los dos precios (los únicos que suman al P&L). */
+  priced: number;
 }
 
-/** Estadísticas de la bitácora. Un cierre cuenta como acierto/fallo por el signo del P&L. */
+/** Estadísticas de la bitácora. El acierto lo decide `outcomeOf`, no el signo del P&L. */
 export function summarize(trades: PaperTrade[]): PaperSummary {
   let closedPnl = 0;
   let wins = 0;
@@ -233,12 +336,21 @@ export function summarize(trades: PaperTrade[]): PaperSummary {
   let pending = 0;
   let active = 0;
   let openUnrealized = 0;
+  let unpriced = 0;
+  let priced = 0;
   for (const t of trades) {
     if (isClosed(t)) {
-      const pnl = realizedPnl(t);
-      closedPnl += pnl;
-      if (pnl > 0) wins++;
-      else if (pnl < 0) losses++;
+      if (isPriced(t)) {
+        closedPnl += realizedPnl(t);
+        priced++;
+      } else if (t.entryPrice != null) {
+        // Entró pero no hay prima de salida: cuenta como acierto/fallo si el plan lo
+        // decidió, pero su P&L no se suma — sumarlo como 0 sería inventar.
+        unpriced++;
+      }
+      const o = outcomeOf(t);
+      if (o === "acierto") wins++;
+      else if (o === "fallo") losses++;
     } else if (t.status === "pendiente") {
       pending++;
     } else if (t.status === "activa") {
@@ -255,5 +367,7 @@ export function summarize(trades: PaperTrade[]): PaperSummary {
     pending,
     active,
     openUnrealized,
+    unpriced,
+    priced,
   };
 }

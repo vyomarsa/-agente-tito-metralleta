@@ -102,6 +102,27 @@ export interface PrimaPosition {
   shortDelta: number;
   /** POP con el que se eligió (0-100). Es el criterio de ranking del dueño. */
   popPct: number;
+  /**
+   * Régimen del escáner que la produjo. Opcional porque el libro es append-only
+   * y las filas anteriores a 2026-08-24 nacieron todas en modo seguro; sin este
+   * dato, un cambio de régimen mezclaría dos estrategias en el mismo win rate.
+   */
+  expert?: boolean;
+  /**
+   * Fracción del capital arriesgada al abrir (0.02 = 2%). Opcional: las posiciones
+   * anteriores al 2026-08-24 nacieron todas al borde bajo del mandato. Se guarda
+   * porque desde esa fecha una posición puede dimensionarse hasta el 3% cuando al
+   * 2% no cabía ni un contrato, y sin este dato el win rate mezclaría dos tamaños
+   * de apuesta — el mismo motivo por el que se guarda `expert`.
+   */
+  riskPctUsed?: number;
+  /**
+   * En cuántas pasadas de observación (10:30-11:30 ET) se había visto este mismo
+   * spread antes de abrirlo. Opcional: las posiciones anteriores a 2026-08-24
+   * nacieron sin ventana previa. NO filtra — se guarda para poder contestar con
+   * datos si conviene exigir persistencia, en vez de elegir un umbral a ciegas.
+   */
+  seenInPasses?: number;
   status: PrimaStatus;
   closedAt: string | null;
   closeReason: string | null;
@@ -200,6 +221,15 @@ export function planOpen(
   candidates: SpreadCandidate[],
   open: PrimaPosition[],
   now: Date,
+  /**
+   * `ignoreWindow` salta SOLO la puerta de día y hora, para el ENSAYO
+   * (`action:"preview"`), que responde "¿qué abriría?" sin escribir nada. Los topes
+   * de cartera y el resto del criterio siguen aplicándose enteros.
+   *
+   * NUNCA lo use el camino que abre de verdad: esa puerta existe porque fuera de
+   * sesión las horquillas se disparan y el crédito que se registraría no existe.
+   */
+  opts: { ignoreWindow?: boolean } = {},
 ): OpenPlan {
   const skipped: { ticker: string; why: string }[] = [];
 
@@ -207,7 +237,7 @@ export function planOpen(
   // y mezclar husos dejaría un desfase silencioso medio año.
   const et = etWallClock(now);
 
-  if (!OPEN_WEEKDAYS.includes(et.weekday)) {
+  if (!opts.ignoreWindow && !OPEN_WEEKDAYS.includes(et.weekday)) {
     const dias = OPEN_WEEKDAYS.map((d) => WEEKDAY_ES[d]).join(" y ");
     return {
       chosen: [], skipped,
@@ -218,7 +248,7 @@ export function planOpen(
   // Sin esta puerta, un disparo fuera de horario abre con cotizaciones de mercado
   // cerrado: bid-ask desbocado y un crédito que no existe. El bot Python la tenía
   // (`entry_gate`) y se perdió al trasladar el motor; esto la devuelve.
-  if (et.minutes < OPEN_FROM_MIN || et.minutes >= OPEN_TO_MIN) {
+  if (!opts.ignoreWindow && (et.minutes < OPEN_FROM_MIN || et.minutes >= OPEN_TO_MIN)) {
     return {
       chosen: [], skipped,
       blocked: `fuera de la ventana de apertura (${hhmm(OPEN_FROM_MIN)}–${hhmm(OPEN_TO_MIN)} ET; son las ${hhmm(et.minutes)} ET)`,
@@ -252,7 +282,15 @@ export function planOpen(
 }
 
 /** Convierte un candidato en posición abierta. PURA (el id y la hora se inyectan). */
-export function positionFrom(c: SpreadCandidate, contracts: number, id: string, now: Date): PrimaPosition {
+export function positionFrom(
+  c: SpreadCandidate,
+  contracts: number,
+  id: string,
+  now: Date,
+  expert = false,
+  seenInPasses?: number,
+  riskPctUsed?: number,
+): PrimaPosition {
   return {
     id,
     openedAt: now.toISOString(),
@@ -269,6 +307,9 @@ export function positionFrom(c: SpreadCandidate, contracts: number, id: string, 
     peakProfitPct: 0,
     shortDelta: c.shortLeg.absDelta,
     popPct: c.stats.probOtmPct,
+    expert,
+    seenInPasses,
+    riskPctUsed,
     status: "abierta",
     closedAt: null,
     closeReason: null,
@@ -280,13 +321,67 @@ export function positionFrom(c: SpreadCandidate, contracts: number, id: string, 
  * Contratos según el riesgo por operación. El saldo NUNCA llega al servidor en el
  * resto de la app, pero aquí la cuenta es SIMULADA y su capital es público
  * ($10.000), así que se puede dimensionar sin tocar datos del usuario.
+ *
+ * `riskPct` es el borde BAJO del mandato §8 (2–3% del capital) por defecto, que es
+ * lo que usa la cuenta de paper. La ficha de /spreads pasa también el 3% para
+ * enseñar la banda: el mandato da un rango, no un número, y ver los dos extremos
+ * dice más que ver uno solo. PURA — corre igual en el servidor y en el cliente.
  */
 export const RISK_PER_TRADE_PCT = 0.02;
-export function sizeFor(c: SpreadCandidate, equity: number): number {
-  const riesgo = equity * RISK_PER_TRADE_PCT;
+export const RISK_PER_TRADE_MAX_PCT = 0.03;
+export function sizeFor(
+  c: SpreadCandidate,
+  equity: number,
+  riskPct: number = RISK_PER_TRADE_PCT,
+): number {
+  if (!(equity > 0) || !(riskPct > 0)) return 0;
+  const riesgo = equity * riskPct;
   const porContrato = c.economics.maxRisk;
   if (!(porContrato > 0)) return 0;
   return Math.max(0, Math.floor(riesgo / porContrato));
+}
+
+/**
+ * Contratos usando la BANDA del mandato §8 (2–3%), no su borde bajo.
+ *
+ * Por qué existe: `sizeFor` al 2% clavado convertía el borde bajo en un suelo DURO,
+ * y con $10.000 de capital eso son $200 por operación. Un spread de $2,50 de ancho
+ * arriesga ~$230 (2,3% — dentro de la banda), así que `floor(200/230)` daba **cero
+ * contratos** y el candidato se caía. Y el ancho no es una preferencia: los strikes
+ * de AAPL a $325 van de $2,50 en $2,50, así que el spread MÁS ESTRECHO que existe
+ * ahí ya es de $2,50.
+ *
+ * Resultado medido el 2026-08-24: de 16 candidatos que pasaron TODOS los filtros
+ * —AAPL, AMZN, NVDA, ORCL entre ellos— se abrieron 2, y los dos eran índices. No
+ * porque el motor los prefiera, sino porque **SPY, QQQ e IWM son los únicos con grid
+ * de $1**, el único ancho que cabía en $200. Con el tope de 2 por sector, la cuenta
+ * salía SPY + QQQ todas las semanas.
+ *
+ * Regla: se dimensiona al borde BAJO como siempre; solo si eso da 0 se comprueba si
+ * UN contrato cabe dentro del borde ALTO. Nunca se estira para poner más de uno —
+ * estirar el mandato para tomar una posición que no cabía es una cosa, y usar el
+ * tope como tamaño normal es otra.
+ */
+export function sizeForBand(
+  c: SpreadCandidate,
+  equity: number,
+  lo: number = RISK_PER_TRADE_PCT,
+  hi: number = RISK_PER_TRADE_MAX_PCT,
+): { contracts: number; riskPct: number } {
+  const riesgoUnitario = c.economics.maxRisk;
+  const conBase = sizeFor(c, equity, lo);
+  if (conBase >= 1) return { contracts: conBase, riskPct: pctOf(riesgoUnitario * conBase, equity) };
+
+  // No cabe ni uno al borde bajo: ¿cabe UNO dentro del tope del mandato?
+  if (sizeFor(c, equity, hi) >= 1) return { contracts: 1, riskPct: pctOf(riesgoUnitario, equity) };
+
+  return { contracts: 0, riskPct: 0 };
+}
+
+/** Fracción del capital que arriesga una posición, redondeada a 4 decimales. */
+function pctOf(riesgo: number, equity: number): number {
+  if (!(equity > 0)) return 0;
+  return Math.round((riesgo / equity) * 10000) / 10000;
 }
 
 // ---------------------------------------------------------------------------

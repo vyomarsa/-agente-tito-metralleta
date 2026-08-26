@@ -718,6 +718,14 @@ tfoot .totals td {
 .pane-price { width: 100%; height: 300px; }
 .pane-hist { width: 100%; height: 170px; border-top: 1px solid var(--border); }
 .chart-empty { color: var(--muted); padding: 30px 0; text-align: center; }
+/* Aviso de barras servidas de la reserva por falta de cuota del proveedor.
+   Va por encima de la gráfica sin empujarla: los datos se ven, pero se sabe
+   que no son de este minuto. */
+.chart-stale {
+  position: absolute; top: 8px; right: 8px; z-index: 26; pointer-events: none;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  padding: 4px 9px; font-size: 11px; color: var(--muted); max-width: 340px;
+}
 .flowchart-wrap { position: relative; }
 .flow-legend {
   position: absolute; top: 8px; left: 8px; z-index: 25; pointer-events: none;
@@ -1314,6 +1322,39 @@ tfoot .totals td {
 .spread-leg b { font-weight: 800; }
 .spread-width { font-size: 12px; color: var(--muted); }
 .spread-block { line-height: 1.5; }
+
+/* Capital del usuario (dimensionamiento). Comparte `tito.risk.accountSize` con
+   /ideas: "mi cuenta" es UN dato, no uno por pantalla. */
+.spread-capital {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-soft);
+}
+.spread-capital label { font-size: 13px; font-weight: 700; color: var(--text); }
+.spread-capital input {
+  font: inherit; width: 120px; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.spread-capital input:focus { outline: none; border-color: var(--accent); }
+.spread-capital .muted { font-size: 11.5px; line-height: 1.45; flex: 1; min-width: 220px; }
+
+/* "Cuántos contratos": la traducción del candidato a tu tamaño de posición.
+   Va destacada porque es el único número de la ficha sobre el que se ACTÚA. */
+.spread-size {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  margin-top: 12px; padding: 10px 14px; border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  font-size: 13px; font-variant-numeric: tabular-nums;
+}
+.spread-size b { font-weight: 800; }
+.spread-size small { color: var(--muted); font-size: 11.5px; margin-left: 4px; }
+.spread-size-n { font-size: 20px; color: var(--accent); letter-spacing: -.02em; }
+.spread-size-n small { color: var(--muted); font-size: 12px; }
+.spread-size.none {
+  display: block; background: var(--amber-bg); border-color: var(--amber-border);
+  color: var(--amber-text); line-height: 1.5;
+}
 .spread-link { color: var(--accent); font-weight: 700; text-decoration: none; white-space: nowrap; }
 .spread-link:hover { text-decoration: underline; }
 
@@ -1424,29 +1465,7 @@ tfoot .totals td {
 .z-scen-target em { font-size: 12px; font-weight: 600; color: var(--muted); font-style: normal; }
 .z-scen-driver { font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
 
-/* chain */
-.z-chain-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 8px; font-size: 11px; color: var(--muted); }
-.z-lg.call { color: var(--green-dark); }
-.z-lg.put { color: var(--red); }
-.z-chain-cols, .z-row {
-  display: grid; grid-template-columns: 52px 1fr 92px 1fr 52px; align-items: center; gap: 4px;
-}
-.z-chain-cols { font-size: 10px; text-transform: uppercase; color: var(--faint); padding: 0 2px 6px; letter-spacing: .03em; }
-.z-chain-cols .z-mid, .z-chain-cols span:nth-child(2), .z-chain-cols span:nth-child(4) { text-align: center; }
-.z-chain-rows { display: flex; flex-direction: column; }
-.z-row { padding: 2px 2px; border-radius: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
-.z-row.magnet { background: color-mix(in srgb, var(--accent) 9%, transparent); }
-.z-oi { text-align: center; color: var(--muted); font-size: 11px; }
-.z-oi.itm { background: color-mix(in srgb, var(--faint) 14%, transparent); border-radius: 4px; color: var(--text); }
-.z-bar-cell { position: relative; height: 18px; display: flex; align-items: center; }
-.z-bar-cell.call { justify-content: flex-end; }
-.z-bar-cell.put { justify-content: flex-start; }
-.z-bar { position: absolute; top: 2px; height: 14px; border-radius: 3px; }
-.z-bar.call { right: 0; background: color-mix(in srgb, var(--green) 60%, transparent); }
-.z-bar.put { left: 0; background: color-mix(in srgb, var(--red) 55%, transparent); }
-.z-bar-num { position: relative; z-index: 1; font-size: 10px; color: var(--text); padding: 0 4px; }
-.z-strike { text-align: center; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 3px; }
-.z-magnet, .z-wall { font-size: 11px; }
+/* Banda del precio actual dentro de la cadena. La reusa /vecinos. */
 .z-spotband {
   text-align: center; font-size: 11px; font-weight: 800; letter-spacing: .05em;
   color: var(--accent); padding: 3px 0; margin: 2px 0;
@@ -1454,29 +1473,472 @@ tfoot .totals td {
   background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 
-/* aggressor */
-.z-aggr-split { position: relative; height: 22px; border-radius: 6px; overflow: hidden; margin-bottom: 10px;
-  background: color-mix(in srgb, var(--red) 45%, transparent); }
-.z-aggr-fill.up { position: absolute; left: 0; top: 0; height: 100%; background: color-mix(in srgb, var(--green) 55%, transparent); }
-.z-aggr-label { position: relative; z-index: 1; display: block; text-align: center; line-height: 22px; font-size: 11px; font-weight: 700; color: var(--text); }
-.z-reads { display: flex; flex-direction: column; gap: 4px; }
-.z-read { display: grid; grid-template-columns: auto auto 1fr auto; gap: 8px; align-items: center; font-size: 12px; padding: 3px 0; border-top: 1px solid var(--border-soft); }
-.z-read:first-child { border-top: none; }
-.z-read-tag { font-weight: 700; padding: 1px 7px; border-radius: 6px; font-size: 11px; }
-.z-read-tag.call { background: var(--green-bg); color: var(--green-dark); }
-.z-read-tag.put { background: var(--red-bg); color: var(--red); }
-.z-read-side { font-weight: 700; }
-.z-read-side.up { color: var(--green); }
-.z-read-side.down { color: var(--red); }
-.z-read-side.flat { color: var(--muted); }
-.z-read-mean { color: var(--muted); font-size: 11px; }
-.z-read-prem { color: var(--text); font-weight: 600; text-align: right; }
-
 .z-disclaimer { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 4px 0 0; }
 
 @media (max-width: 900px) {
   .z-grid { grid-template-columns: 1fr; }
 }
+
+/* ════════════════════════════════════════════════════════════════════════
+   0DTE — maquetación alineada con la versión de referencia del grupo.
+
+   TODO va scopeado bajo `.z-wrap` a propósito. /vecinos reusa el esqueleto
+   `z-*` de arriba (.z-page/.z-grid/.z-head/.z-spotband…) y aquí se redefinen
+   varios de esos mismos nombres con OTRO sentido (.z-head pasa a ser una
+   cabecera con h1, .z-bar una barra de 4px al pie de la celda…). Sin el
+   scope, abrir /vecinos mostraría la maquetación del 0DTE encima.
+
+   La paleta son los tokens globales de siempre, así que el claro/oscuro lo
+   sigue mandando el toggle de la app; esta hoja no fija ningún color propio
+   salvo los cuatro tokens que la tabla necesita y la paleta no traía.
+   ════════════════════════════════════════════════════════════════════════ */
+
+.z-wrap {
+  max-width: 1440px; margin: 0 auto; padding: 28px 40px 90px; font-size: 15px;
+  /* tokens locales: filas resaltadas de la cadena y el rojo de texto, que en
+     claro necesita más contraste que --red sobre fondo blanco. */
+  --red-text: #b42318;
+  --row-hot: color-mix(in srgb, var(--amber) 14%, transparent);
+  --row-magnet: color-mix(in srgb, var(--accent) 7%, transparent);
+  --magnet-cell: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+[data-theme="dark"] .z-wrap {
+  --red-text: #ff8a83;
+  --row-hot: color-mix(in srgb, var(--amber) 20%, transparent);
+  --row-magnet: color-mix(in srgb, var(--accent) 12%, transparent);
+  --magnet-cell: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+/* ── Cabecera ──────────────────────────────────────────────────────────── */
+.z-wrap .z-head {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 16px; flex-wrap: wrap; padding: 0; background: none; border: none;
+}
+.z-wrap .z-head h1 { margin: 0 0 4px; font-size: 26px; letter-spacing: -0.2px; }
+.z-wrap .z-head p { margin: 0; color: var(--muted); font-size: 14px; }
+.z-controls { display: flex; gap: 8px; align-items: center; }
+.z-controls select, .z-controls button {
+  font: inherit; padding: 8px 14px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer;
+}
+.z-controls button { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.z-controls button:disabled { opacity: .6; cursor: default; }
+
+/* ── Barra de vencimientos ─────────────────────────────────────────────── */
+.z-daybar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 20px 0 16px; }
+.z-daybar-lbl {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); font-weight: 600; margin-right: 4px;
+}
+.z-daychip {
+  display: inline-flex; flex-direction: column; align-items: center; gap: 1px;
+  font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text); line-height: 1.2;
+}
+.z-daychip em { font-style: normal; font-size: 10px; color: var(--faint); letter-spacing: .03em; }
+.z-daychip:hover { background: var(--panel-2); }
+.z-daychip-on { border: 2px solid var(--accent); color: var(--accent); font-weight: 600; padding: 5px 13px; }
+.z-daychip-on em { color: var(--accent); }
+
+/* ── Línea de contexto ─────────────────────────────────────────────────── */
+.z-meta {
+  display: flex; gap: 18px; flex-wrap: wrap; align-items: center;
+  margin: 0 0 16px; color: var(--muted); font-size: 14px;
+}
+.z-meta b { color: var(--text); }
+.z-meta .up { color: var(--green); }
+.z-meta .down { color: var(--red); }
+.z-time { margin-left: auto; font-variant-numeric: tabular-nums; }
+.z-fresh {
+  background: var(--green-bg); border: 1px solid var(--green); color: var(--green-dark);
+  padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
+}
+.z-flag {
+  background: var(--amber-bg); border: 1px solid var(--amber-border); color: var(--amber-text);
+  padding: 2px 8px; border-radius: 999px; font-size: 12px;
+}
+
+/* ── Bloques de sección: mismo molde para ticket / trade / bias / cinta ─── */
+.z-ticket, .z-live {
+  border: 2px solid var(--border); border-radius: 12px; padding: 16px 18px;
+  margin: 0 0 16px; background: var(--panel);
+}
+.z-ticket-long, .z-live-long { border-color: var(--green); background: var(--green-bg); }
+.z-ticket-short, .z-live-short { border-color: var(--red-soft); background: var(--red-bg); }
+.z-ticket-idle, .z-live-idle { border-color: var(--border); background: var(--panel-2); }
+.z-ticket header, .z-live header {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;
+}
+.z-ticket h2, .z-live h2 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -.3px; }
+.z-live-sub { font-size: 22px; font-weight: 400; color: var(--muted); letter-spacing: 0; }
+.z-alt-suffix { font-size: 11px; font-weight: 400; color: var(--muted); letter-spacing: 0; }
+.z-live-clock { margin-left: auto; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.z-live-momtag {
+  font-size: 11px; font-weight: 700; letter-spacing: .03em; color: var(--amber-text);
+  background: var(--amber-bg); border: 1px solid var(--amber-border); padding: 2px 9px; border-radius: 999px;
+}
+.z-live-msg { margin: 0 0 8px; font-size: 13px; color: var(--text); line-height: 1.5; }
+.z-live-dir { font-size: 24px; font-weight: 700; margin-bottom: 10px; }
+.z-dir-long { color: var(--green-dark); }
+.z-dir-short { color: var(--red-text); }
+.z-live-row { display: flex; align-items: flex-end; gap: 22px; flex-wrap: wrap; margin-bottom: 10px; }
+.z-live-row > div { display: flex; flex-direction: column; gap: 2px; }
+.z-live-row b { font-size: 23px; letter-spacing: -0.3px; font-variant-numeric: tabular-nums; }
+.z-live-reason { margin: 0 0 6px; font-size: 12.5px; color: var(--text); line-height: 1.5; }
+.z-outlook-caveat { margin: 0; font-size: 11.5px; color: var(--faint); line-height: 1.45; }
+
+/* Ticket: el contrato concreto */
+.z-ticket-badge {
+  margin-left: auto; font-size: 13px; font-weight: 800; letter-spacing: .06em;
+  padding: 4px 12px; border-radius: 8px;
+  color: var(--green-dark); background: var(--green-bg); border: 1px solid var(--green);
+}
+.z-ticket-short .z-ticket-badge { color: var(--red-text); background: var(--red-bg); border-color: var(--red-soft); }
+.z-ticket-buy {
+  display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap;
+  padding-bottom: 12px; border-bottom: 1px solid var(--border);
+}
+.z-ticket-act {
+  font-size: 12px; font-weight: 800; letter-spacing: .06em; padding: 3px 9px; border-radius: 6px;
+  color: var(--green-dark); background: var(--green-bg); border: 1px solid var(--green);
+}
+.z-ticket-short .z-ticket-act { color: var(--red-text); background: var(--red-bg); border-color: var(--red-soft); }
+.z-ticket-ctr { font-size: 25px; font-weight: 800; letter-spacing: -.3px; font-variant-numeric: tabular-nums; }
+.z-ticket-at { font-size: 13px; color: var(--muted); }
+.z-ticket-price { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.z-ticket-quote { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.z-ticket-st { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 14px 0 4px; }
+.z-ticket-box {
+  display: flex; flex-direction: column; gap: 3px; background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+}
+.z-ticket-k { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+.z-ticket-v { font-size: 21px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.z-ticket-tgt { color: var(--green-dark); }
+.z-ticket-stp { color: var(--red-text); }
+.z-ticket-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.z-ticket-chip {
+  font-size: 11px; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border);
+  padding: 4px 9px; border-radius: 6px; font-variant-numeric: tabular-nums;
+}
+.z-ticket-chip b { color: var(--text); }
+.z-ticket-foot {
+  margin: 14px 0 0; font-size: 11px; color: var(--faint); line-height: 1.5;
+  border-top: 1px solid var(--border); padding-top: 10px;
+}
+.z-ticket-none { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
+
+/* ── GEX Bias: cono de 5 min ───────────────────────────────────────────── */
+.z-outlook {
+  border: 1px solid var(--border); border-left-width: 4px; background: var(--panel);
+  border-radius: 12px; padding: 18px 20px; margin: 0 0 16px;
+}
+.z-lean-alcista { border-left-color: var(--green); }
+.z-lean-bajista { border-left-color: var(--red); }
+.z-lean-lateral { border-left-color: var(--muted); }
+.z-outlook-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.z-outlook-tag { font-size: 26px; letter-spacing: -.3px; color: var(--text); font-weight: 700; }
+.z-lean-chip { font-size: 18px; font-weight: 700; padding: 4px 12px; border-radius: 999px; }
+.z-lean-chip-alcista { background: var(--green-bg); color: var(--green-dark); }
+.z-lean-chip-bajista { background: var(--red-bg); color: var(--red-text); }
+.z-lean-chip-lateral { background: var(--panel-2); color: var(--muted); }
+.z-conf { margin-left: auto; font-size: 11px; color: var(--faint); }
+.z-outlook-head {
+  margin: 0 0 14px; font-size: 20px; font-weight: 700; letter-spacing: -0.3px;
+  line-height: 1.35; font-variant-numeric: tabular-nums;
+}
+.z-outlook-range {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
+  font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.z-range-bar { position: relative; flex: 1; height: 30px; }
+.z-range-fill {
+  position: absolute; top: 12px; left: 0; right: 0; height: 6px;
+  background: linear-gradient(90deg, var(--red-bg), var(--panel-2), var(--green-bg));
+  border-radius: 3px;
+}
+.z-range-now {
+  position: absolute; top: 0; transform: translateX(-50%); font-size: 12px;
+  font-weight: 700; color: var(--accent); white-space: nowrap;
+  background: var(--panel); padding: 0 4px; border-radius: 4px;
+}
+.z-range-now::after {
+  content: ""; position: absolute; left: 50%; top: 18px; width: 2px; height: 12px;
+  background: var(--accent); transform: translateX(-50%);
+}
+.z-outlook-detail { margin: 0 0 8px; font-size: 13px; color: var(--text); line-height: 1.5; }
+.z-flow {
+  display: flex; flex-direction: column; gap: 5px; margin: 0 0 10px;
+  padding: 8px 10px; background: var(--panel-2); border-radius: 8px;
+}
+.z-flow-line {
+  margin: 0; font-size: 12px; color: var(--muted); line-height: 1.45;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.z-flow-tag {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .06em; padding: 2px 6px;
+  border-radius: 4px; background: var(--accent-dim); color: var(--accent);
+}
+
+/* ── Marcador alterno vs original ──────────────────────────────────────── */
+.z-altcmp {
+  border: 1px dashed var(--border); border-radius: 12px; padding: 12px 16px;
+  margin: 0 0 16px; background: var(--panel-2);
+}
+.z-altcmp h3 {
+  margin: 0 0 8px; font-size: 12px; color: var(--muted); font-weight: 700;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.z-altcmp h4 { margin: 12px 0 6px; font-size: 12.5px; color: var(--text); font-weight: 700; }
+.z-altcmp-line { margin: 0; font-size: 14px; color: var(--text); font-weight: 500; }
+.z-altcmp-sub { margin: 4px 0 0; font-size: 12px; color: var(--muted); line-height: 1.45; }
+.z-altcmp table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.z-altcmp th {
+  text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--faint); font-weight: 700; padding: 0 10px 5px 0; white-space: nowrap;
+}
+.z-altcmp td { padding: 6px 10px 6px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.z-altcmp td b { font-weight: 700; }
+.z-altcmp em { font-style: normal; color: var(--faint); font-size: 11px; }
+.z-altcmp .up { color: var(--green-dark); }
+.z-altcmp .down { color: var(--red-text); }
+
+/* ── Volumen en vivo: velocidad + CVD ──────────────────────────────────── */
+.z-vv {
+  border: 1px solid var(--border); border-left-width: 4px; border-left-color: var(--accent);
+  background: var(--panel); border-radius: 12px; padding: 16px 18px; margin: 0 0 16px;
+}
+.z-vv-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.z-vv-tag { font-size: 26px; letter-spacing: -.3px; color: var(--text); font-weight: 700; }
+.z-vv-chip { font-size: 15px; font-weight: 700; padding: 4px 11px; border-radius: 999px; }
+.z-vv-buy { background: var(--green-bg); color: var(--green-dark); }
+.z-vv-sell { background: var(--red-bg); color: var(--red-text); }
+.z-vv-flat { background: var(--panel-2); color: var(--muted); }
+.z-vv-clock { margin-left: auto; font-size: 15px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.z-vv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+.z-vv-big {
+  font-size: 26px; font-weight: 700; letter-spacing: -0.4px;
+  font-variant-numeric: tabular-nums; line-height: 1.1; margin: 2px 0;
+}
+.z-vv-big.up { color: var(--green-dark); }
+.z-vv-big.down { color: var(--red-text); }
+.z-vv-lbl { font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+.z-vv-sub { font-size: 12px; color: var(--faint); margin-bottom: 9px; line-height: 1.4; }
+.z-vv-div {
+  position: relative; height: 13px; background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+}
+.z-vv-zero { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: var(--faint); transform: translateX(-50%); z-index: 2; }
+.z-vv-fill { position: absolute; top: 0; bottom: 0; }
+.z-vv-ends { display: flex; justify-content: space-between; font-size: 9.5px; color: var(--faint); margin-top: 3px; }
+.z-vv-verdict {
+  margin: 14px 0 0; padding: 10px 12px; background: var(--panel-2);
+  border-radius: 8px; font-size: 13px; line-height: 1.5; color: var(--text);
+}
+
+/* ── Cinta: bloques entrantes ──────────────────────────────────────────── */
+.z-tt {
+  border: 1px solid var(--border); border-left-width: 4px; border-left-color: var(--accent);
+  background: var(--panel); border-radius: 12px; padding: 16px 18px; margin: 0 0 16px;
+}
+.z-tt-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.z-tt-tag { font-size: 26px; font-weight: 700; color: var(--text); letter-spacing: -.3px; }
+.z-tt-inst { font-size: 15px; font-weight: 700; background: var(--accent); color: #fff; padding: 3px 11px; border-radius: 999px; }
+.z-tt-takers {
+  margin-left: auto; font-size: 15px; color: var(--amber-text); background: var(--amber-bg);
+  border: 1px solid var(--amber-border); padding: 3px 11px; border-radius: 999px;
+}
+.z-tt-row {
+  display: grid; grid-template-columns: 104px 68px minmax(120px, 1fr) 70px 84px;
+  align-items: center; gap: 8px; padding: 7px 8px;
+  border-bottom: 1px solid var(--border); border-radius: 6px;
+  font-variant-numeric: tabular-nums; font-size: 13px;
+}
+.z-tt-row:last-child { border-bottom: none; }
+.z-tt-bull { color: var(--green-dark); }
+.z-tt-bear { color: var(--red-text); }
+.z-tt-k { font-weight: 700; padding: 2px 8px; border-radius: 6px; font-size: 12px; justify-self: start; }
+.z-tt-k.call { background: var(--green-bg); color: var(--green-dark); }
+.z-tt-k.put { background: var(--red-bg); color: var(--red-text); }
+.z-tt-side { font-weight: 700; }
+.z-tt-mean { color: var(--muted); font-size: 12px; }
+.z-tt-sz, .z-tt-prem { text-align: right; color: var(--text); font-weight: 600; }
+.z-tt-disc {
+  margin-top: 10px; font-size: 11.5px; color: var(--faint); line-height: 1.5;
+  border-top: 1px dashed var(--border); padding-top: 9px;
+}
+
+/* ── Tiles de resumen ──────────────────────────────────────────────────── */
+.z-summary {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--space-md); margin: 4px 0 16px;
+}
+.z-sum-card {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px;
+}
+.z-sum-card b { font-size: 24px; letter-spacing: -0.4px; font-variant-numeric: tabular-nums; }
+.z-sum-lbl { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.z-sum-sub { font-size: 13px; color: var(--faint); font-variant-numeric: tabular-nums; line-height: 1.45; }
+.z-sum-call { border-left: 3px solid var(--call); }
+.z-sum-call b { color: var(--green-dark); }
+.z-sum-put { border-left: 3px solid var(--put); }
+.z-sum-put b { color: var(--red-text); }
+
+/* ── Gamma del día ─────────────────────────────────────────────────────── */
+.z-gex {
+  border: 1px solid var(--border); background: var(--panel); border-radius: 10px;
+  padding: 16px; margin: 0 0 16px; border-left-width: 3px;
+}
+.z-gex-positive { border-left-color: var(--green); }
+.z-gex-negative { border-left-color: var(--red); }
+.z-gex header, .z-fc header, .z-eval header {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 14px;
+}
+.z-gex h2, .z-fc h2, .z-eval h2 { margin: 0; font-size: 15px; }
+.z-gex header span, .z-fc header span, .z-eval header span {
+  color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.z-gex-grid, .z-eval-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--space-md);
+}
+.z-gex-grid > div, .z-eval-grid > div { display: flex; flex-direction: column; gap: 2px; }
+.z-gex-grid b, .z-eval-grid b { font-size: 20px; letter-spacing: -0.3px; font-variant-numeric: tabular-nums; }
+.z-gex-positive .z-gex-grid > div:first-child b { color: var(--green-dark); }
+.z-gex-negative .z-gex-grid > div:first-child b { color: var(--red-text); }
+
+/* ── GEX Pinning ───────────────────────────────────────────────────────── */
+.z-close { border: 2px solid var(--accent); background: var(--accent-dim); border-radius: 12px; padding: 18px 20px; margin: 0 0 16px; }
+.z-close-pending { border-color: var(--border); border-style: dashed; background: var(--panel-2); }
+.z-close-pending .z-close-strike { color: var(--faint); }
+.z-close-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.z-close-tag { font-size: 26px; font-weight: 700; letter-spacing: -.3px; color: var(--text); }
+.z-close-min { margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.z-close-main { display: flex; gap: 32px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 10px; }
+.z-close-main > div { display: flex; flex-direction: column; gap: 2px; }
+.z-close-strike { font-size: 34px; font-weight: 700; letter-spacing: -0.6px; color: var(--accent); font-variant-numeric: tabular-nums; line-height: 1.05; }
+.z-close-netgex { font-size: 24px; font-weight: 700; letter-spacing: -.3px; font-variant-numeric: tabular-nums; }
+.z-close-netgex.up { color: var(--green-dark); }
+.z-close-netgex.down { color: var(--red-text); }
+.z-close-note { margin: 0 0 6px; font-size: 15px; color: var(--text); line-height: 1.5; }
+
+/* ── Escenarios de cierre ──────────────────────────────────────────────── */
+.z-fc { border: 1px solid var(--border); background: var(--panel); border-radius: 10px; padding: 16px; margin: 0 0 16px; }
+.z-fc-caveat {
+  background: var(--amber-bg); border: 1px solid var(--amber-border); color: var(--amber-text);
+  padding: 8px 12px; border-radius: 6px; font-size: 12.5px; margin-bottom: 12px;
+}
+.z-fc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-md); }
+.z-fc-card {
+  border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 3px; background: var(--panel-2);
+}
+.z-fc-card b { font-size: 22px; letter-spacing: -0.4px; font-variant-numeric: tabular-nums; }
+.z-fc-card p { margin: 6px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+.z-fc-pct { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.z-fc-bull { border-left: 3px solid var(--green); }
+.z-fc-bull b, .z-fc-bull .z-fc-pct { color: var(--green-dark); }
+.z-fc-bear { border-left: 3px solid var(--red); }
+.z-fc-bear b, .z-fc-bear .z-fc-pct { color: var(--red-text); }
+.z-fc-base { border-left: 3px solid var(--accent); }
+.z-fc-base b, .z-fc-base .z-fc-pct { color: var(--accent); }
+.z-fc-prob { position: relative; margin-top: 8px; height: 16px; background: var(--border-soft); border-radius: 4px; overflow: hidden; }
+.z-fc-prob i { position: absolute; inset: 0 auto 0 0; background: var(--accent-dim); }
+.z-fc-prob span { position: relative; z-index: 1; font-size: 10.5px; line-height: 16px; padding-left: 6px; color: var(--text); font-weight: 600; }
+
+/* ── Gráfica ───────────────────────────────────────────────────────────── */
+.z-chart-card { border: 1px solid var(--border); background: var(--panel); border-radius: 12px; padding: 14px 16px; margin: 0 0 16px; }
+.z-chart-head { font-size: 14px; font-weight: 500; color: var(--text); margin-bottom: 8px; }
+.z-chart-wrap { width: 100%; height: clamp(280px, 42vh, 420px); }
+.z-chart-legend { margin: 8px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.5; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.z-chart-msg { padding: 28px 12px; text-align: center; color: var(--faint); font-size: 13px; line-height: 1.5; }
+
+/* ── Cadena (tabla espejo) ─────────────────────────────────────────────── */
+.z-chain-wrap { width: 100%; overflow-x: auto; }
+.z-wrap .z-chain {
+  width: 100%; border-collapse: collapse; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  font-variant-numeric: tabular-nums; min-width: 860px;
+}
+.z-wrap .z-chain th, .z-wrap .z-chain td {
+  padding: 9px 12px; text-align: right; font-size: 14.5px; border-bottom: 1px solid var(--border-soft);
+}
+.z-wrap .z-chain thead th {
+  background: var(--panel-2); color: var(--muted); font-weight: 600;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+}
+.z-wrap .z-chain tr.z-side th { font-size: 12px; letter-spacing: .18em; padding: 8px; }
+.z-side .z-call { color: var(--green-dark); background: var(--green-bg); }
+.z-side .z-put { color: var(--red-text); background: var(--red-bg); }
+.z-wrap .z-chain td.z-mid, .z-wrap .z-chain th.z-mid {
+  text-align: center; font-weight: 700; background: var(--panel-2);
+  border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+}
+.z-itm { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.z-vol { position: relative; font-weight: 600; }
+.z-vol span { position: relative; z-index: 1; }
+/* Las barras crecen hacia AFUERA desde el centro: las de call se anclan a la
+   derecha de su celda y las de put a la izquierda, así las dos columnas se
+   leen como un histograma espejado alrededor del strike. */
+.z-wrap .z-bar { position: absolute; top: auto; bottom: 0; height: 4px; display: block; border-radius: 2px; }
+.z-bar-call { right: 0; background: var(--call); }
+.z-bar-put { left: 0; background: var(--put); }
+.z-wrap .z-aggr { font-size: 11px; white-space: nowrap; color: var(--faint); }
+.z-wrap .z-aggr b { font-size: 10.5px; letter-spacing: .03em; }
+.z-wrap .z-aggr small { display: inline-block; margin-left: 4px; font-size: 9.5px; color: var(--faint); opacity: .8; }
+.z-aggr-compra { color: var(--green-dark); }
+.z-aggr-venta { color: var(--red-text); }
+.z-aggr-mixto { color: var(--muted); }
+.z-toprow td { background: var(--row-hot); }
+.z-wrap .z-magnet { background: var(--magnet-cell); font-size: inherit; }
+.z-magnetrow td:not(.z-magnet) { background: var(--row-magnet); }
+.z-magnet-tag { font-style: normal; margin-right: 3px; font-size: 11px; }
+.z-top { position: relative; }
+.z-top span { font-weight: 800; font-size: 14px; }
+.z-top-call span { color: var(--green-dark); }
+.z-top-put span { color: var(--red-text); }
+.z-tag {
+  position: absolute; top: 50%; left: 8px; transform: translateY(-50%);
+  font-size: 9px; font-style: normal; font-weight: 700; letter-spacing: .06em;
+  padding: 2px 5px; border-radius: 4px; white-space: nowrap;
+}
+.z-top-call .z-tag { background: var(--green-bg); color: var(--green-dark); }
+.z-top-put .z-tag { background: var(--red-bg); color: var(--red-text); }
+.z-toprow .z-bar { height: 5px; }
+/* Banda del precio actual: es un separador, no una fila de datos. */
+.z-wrap td.z-spotband {
+  background: var(--accent-dim); text-align: center; padding: 7px 10px; margin: 0;
+  border-top: 2px solid var(--accent); border-bottom: 2px solid var(--accent);
+  letter-spacing: normal; font-size: 14px; font-weight: 400;
+}
+.z-spot-flag {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
+  color: #fff; background: var(--accent); padding: 2px 8px; border-radius: 999px; vertical-align: middle;
+}
+.z-wrap td.z-spotband b {
+  color: var(--accent); font-size: 15px; font-weight: 700; margin: 0 8px;
+  vertical-align: middle; font-variant-numeric: tabular-nums;
+}
+.z-spot-hint { color: var(--muted); font-size: 11px; font-weight: 400; vertical-align: middle; }
+
+/* ── Precisión del modelo + pie ────────────────────────────────────────── */
+.z-eval { border: 1px solid var(--border); background: var(--panel); border-radius: 10px; padding: 16px; margin: 0 0 16px; }
+.z-eval-wait { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.z-foot { color: var(--faint); font-size: 12px; margin-top: 14px; line-height: 1.55; }
+.z-wrap .z-error {
+  background: var(--red-bg); border: 1px solid var(--red-soft); color: var(--red-text);
+  padding: 12px 14px; border-radius: 8px; margin: 16px 0;
+}
+
+@media (max-width: 720px) {
+  .z-wrap { padding: 20px 16px 70px; }
+  .z-vv-grid { grid-template-columns: 1fr; }
+  .z-ticket-st { grid-template-columns: 1fr; }
+  .z-tt-row { grid-template-columns: 96px 62px 1fr; row-gap: 2px; }
+  .z-tt-sz, .z-tt-prem { text-align: left; }
+}
+
 
 /* ── Pre-market del Master ───────────────────────────────────────────────── */
 .mstr-page { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
@@ -1682,104 +2144,6 @@ tfoot .totals td {
 }
 .pt-scan:hover { filter: brightness(1.05); }
 .pt-scan:disabled { opacity: 0.6; cursor: default; }
-
-/* ── Contratos Vecinos 2.0 (/vecinos) ─────────────────────────────────── */
-/* Reusa el esqueleto del 0DTE (.z-page/.z-tabs/.z-head/.z-grid…); aquí solo
-   viven las piezas propias: el veredicto, los objetivos y el vecindario. */
-
-.vec-decision { border-left: 4px solid var(--border); }
-.vec-decision.go { border-left-color: var(--green); }
-.vec-decision.wait { border-left-color: var(--amber); }
-.vec-decision.flat { border-left-color: var(--muted); }
-
-.vec-dec-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
-.vec-dec-verdict { font-size: 26px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; }
-.vec-dec-verdict.go { color: var(--green-dark); }
-.vec-dec-verdict.wait { color: var(--amber-text, var(--amber)); }
-.vec-dec-verdict.flat { color: var(--muted); }
-.vec-dec-dir { font-size: 20px; font-weight: 800; padding: 6px 16px; border-radius: 999px; background: var(--chip-bg); }
-.vec-dec-dir.up { color: var(--green-dark); background: var(--green-bg); }
-.vec-dec-dir.down { color: var(--red-strong); background: var(--red-bg); }
-.vec-dec-dir.flat { color: var(--muted); }
-.vec-dec-summary { margin: 12px 0 0; font-size: 14px; line-height: 1.55; color: var(--text-2); }
-
-.vec-sibling { margin-top: 12px; font-size: 12px; font-weight: 700; padding: 6px 12px; border-radius: 8px; background: var(--chip-bg); color: var(--text-2); }
-.vec-sibling.confirma { background: var(--green-bg); color: var(--green-strong); }
-.vec-sibling.contradice { background: var(--red-bg); color: var(--red-strong); }
-
-.vec-warn {
-  margin-top: 10px; font-size: 12px; line-height: 1.5; padding: 8px 12px;
-  border-radius: 8px; background: var(--amber-bg); color: var(--amber-text, var(--amber));
-}
-
-.vec-hint { font-size: 12px; color: var(--muted); line-height: 1.5; margin-bottom: 12px; }
-
-/* objetivos */
-.vec-targets { display: flex; flex-direction: column; gap: 12px; }
-.vec-target { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--panel-2); }
-.vec-target.iman { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
-.vec-target.ruptura { border-style: dashed; }
-.vec-t-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
-.vec-t-strike { font-size: 15px; font-weight: 700; }
-.vec-t-strike em { font-style: normal; font-size: 12px; font-weight: 600; color: var(--muted); margin-left: 6px; }
-.vec-t-prob { font-size: 17px; font-weight: 800; }
-.vec-t-bar { height: 6px; border-radius: 999px; background: var(--track); margin: 8px 0 6px; overflow: hidden; }
-.vec-t-fill { display: block; height: 100%; background: var(--accent); }
-.vec-target.ruptura .vec-t-fill { background: var(--red-soft); }
-.vec-t-note { font-size: 11.5px; color: var(--muted); line-height: 1.45; }
-
-.vec-src {
-  display: inline-block; font-size: 9.5px; font-weight: 800; text-transform: uppercase;
-  letter-spacing: .04em; padding: 1px 6px; border-radius: 5px; margin-right: 6px;
-  background: var(--neutral-bg); color: var(--neutral-text);
-}
-.vec-src.flujo { background: var(--green-bg-2); color: var(--green-strong); }
-.vec-src.estructura { background: var(--amber-bg); color: var(--amber-text, var(--amber)); }
-
-/* vecindario */
-/* La tarjeta se mide a sí misma (container query), no al viewport: vive dentro de
-   .z-grid, así que su ancho depende de la columna, no de la ventana. Con un media
-   query la columna "Lectura" se quedaba en 0px en pantallas de ~960px. */
-.vec-hood { container-type: inline-size; }
-.vec-hood-cols,
-.vec-hrow {
-  display: grid; grid-template-columns: 68px 84px 84px 70px minmax(0, 1fr);
-  gap: 8px; align-items: center;
-}
-.vec-hood-cols { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); padding: 0 6px 6px; }
-.vec-hood-rows { display: flex; flex-direction: column; }
-.vec-hrow { padding: 5px 6px; border-top: 1px solid var(--border-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
-.vec-hrow.magnet { background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 6px; }
-.vec-hrow.ninguna { opacity: .55; }
-.vec-hstrike { font-weight: 700; }
-.vec-hnet { text-align: right; color: var(--muted); }
-.vec-hnet.up { color: var(--green-dark); font-weight: 700; }
-.vec-hnet.down { color: var(--red-strong); font-weight: 700; }
-.vec-hbias { position: relative; height: 16px; display: flex; align-items: center; }
-.vec-hbar { position: absolute; left: 0; height: 8px; border-radius: 3px; opacity: .35; }
-.vec-hbar.up { background: var(--green); }
-.vec-hbar.down { background: var(--red); }
-.vec-hbias-num { position: relative; font-size: 11px; font-weight: 800; }
-.vec-hstruct { font-size: 10px; font-weight: 700; white-space: nowrap; }
-.vec-hstruct.up { color: var(--green-dark); }
-.vec-hstruct.down { color: var(--red-strong); }
-.vec-hnone { color: var(--faint); }
-.vec-hread { font-size: 11px; color: var(--muted); line-height: 1.35; }
-
-/* explicación del método */
-.vec-how > summary { cursor: pointer; font-size: 13px; font-weight: 700; color: var(--text-2); }
-.vec-how ol { margin: 12px 0 0; padding-left: 20px; }
-.vec-how li { font-size: 12.5px; line-height: 1.6; color: var(--text-2); margin-bottom: 8px; }
-.vec-how-note { font-size: 11.5px; color: var(--muted); line-height: 1.5; margin: 10px 0 0; }
-
-/* Tarjeta estrecha: la lectura baja a su propia línea en vez de aplastarse. */
-@container (max-width: 540px) {
-  .vec-hood-cols,
-  .vec-hrow { grid-template-columns: 62px minmax(0, 1fr) minmax(0, 1fr) 62px; }
-  .vec-col-read { display: none; }
-  .vec-hread { grid-column: 1 / -1; padding: 2px 0 4px 4px; }
-  .vec-hrow { padding-bottom: 7px; }
-}
 
 /* ── Cinta de cotizaciones (estilo panel de bolsa) ──────────────────────── */
 /* Va SIEMPRE en oscuro, en los dos temas: el precio se pide en blanco y sobre
@@ -1987,3 +2351,86 @@ tfoot .totals td {
 .vp-table td.down { color: var(--red-strong); font-weight: 700; }
 /* El motivo es texto largo: es la única columna que puede envolver. */
 .vp-why { white-space: normal; min-width: 220px; max-width: 340px; line-height: 1.4; font-size: 11.5px; }
+
+/* ── Ficha completa de una posición ABIERTA de venta de prima ─────────────
+   Antes era una línea suelta con los strikes. Ahora enseña la posición entera
+   (crédito, colateral, breakeven, POP, delta, capturado y la regla que la
+   vigila), en la misma clave visual que la ficha de /spreads. */
+.vpp-list { display: flex; flex-direction: column; gap: 10px; }
+
+.vpp-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;
+}
+
+.vpp-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+.vpp-ticker { font-size: 15px; letter-spacing: .01em; }
+.vpp-kind { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.vpp-strikes { font-variant-numeric: tabular-nums; font-weight: 700; }
+.vpp-tag {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  padding: 2px 7px; border-radius: 999px; cursor: help;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--muted);
+}
+/* El P&L manda a la derecha: es lo primero que se busca al mirar una abierta. */
+.vpp-pnl { margin-left: auto; font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.vpp-pnl small { font-size: 10px; font-weight: 600; color: var(--muted); margin-left: 4px; }
+.vpp-pnl.up { color: var(--green-strong); }
+.vpp-pnl.down { color: var(--red-strong); }
+
+.vpp-legs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.vpp-leg {
+  padding: 3px 9px; border-radius: 8px; font-variant-numeric: tabular-nums;
+  border: 1px solid var(--border-soft);
+}
+.vpp-leg.sell { background: var(--green-bg); color: var(--green-strong); }
+.vpp-leg.buy { background: var(--panel-2); color: var(--text-2); }
+
+.vpp-grid {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 16px;
+  font-size: 12px; color: var(--muted);
+}
+.vpp-grid > span { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.vpp-grid b { font-size: 15px; color: var(--text); font-variant-numeric: tabular-nums; }
+.vpp-grid small { font-size: 10.5px; color: var(--faint); line-height: 1.35; }
+
+/* Barra de recorrido: de la válvula de pérdida al 100% del crédito. */
+.vpp-bar { display: flex; flex-direction: column; gap: 4px; cursor: help; }
+.vpp-track {
+  position: relative; height: 8px; border-radius: 999px;
+  background: var(--track); border: 1px solid var(--border-soft); overflow: hidden;
+}
+.vpp-fill { position: absolute; top: 0; bottom: 0; border-radius: 999px; }
+.vpp-fill.up { background: var(--green); }
+.vpp-fill.down { background: var(--red); }
+.vpp-mark { position: absolute; top: -1px; bottom: -1px; width: 1px; }
+.vpp-mark.zero { background: var(--muted); }
+.vpp-mark.floor { background: var(--accent); }
+/* Rango del 0DTE: el stop en rojo y el objetivo en verde, en el orden en que
+   están en el precio (invertido si la idea es bajista). */
+.vpp-track.rango.long { background: linear-gradient(90deg, var(--red-bg), var(--green-bg)); }
+.vpp-track.rango.short { background: linear-gradient(90deg, var(--green-bg), var(--red-bg)); }
+.vpp-mark.spot { width: 2px; background: var(--text); }
+.vpp-scale {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 9.5px; color: var(--faint); letter-spacing: .02em;
+}
+
+.vpp-rule {
+  font-size: 11.5px; line-height: 1.5; padding: 8px 10px; border-radius: 9px;
+  background: var(--panel-2); border: 1px solid var(--border-soft); color: var(--text-2);
+}
+.vpp-rule.avisar { border-color: var(--amber); }
+.vpp-rule.cerrar { border-color: var(--red); }
+
+@media (max-width: 900px) {
+  .vpp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .vpp-pnl { margin-left: 0; }
+}
+
+/* La ficha de la bitácora (Swing/Todos) reusa la rejilla y la barra de las otras
+   dos pestañas, pero vive dentro de .pt-card, que ya trae su columna lateral con
+   el P&L y las acciones. Solo hay que darle aire. */
+.pt-grid { margin: 12px 0; }
+.pt-card-main .vpp-bar { margin-bottom: 10px; }
+.vpp-mark.trigger { width: 2px; background: var(--accent); }

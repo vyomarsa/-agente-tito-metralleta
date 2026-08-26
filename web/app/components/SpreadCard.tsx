@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { SpreadCandidate } from "@/lib/creditSpread";
+import { RISK_PER_TRADE_MAX_PCT, RISK_PER_TRADE_PCT, sizeFor } from "@/lib/primaPaper";
 
 const money = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 const money2 = (n: number) => `$${n.toFixed(2)}`;
@@ -16,9 +17,12 @@ const TYPE_LABEL: Record<string, string> = {
 export default function SpreadCard({
   c,
   view,
+  accountSize,
 }: {
   c: SpreadCandidate;
   view: "estudiante" | "pro";
+  /** Capital del usuario para dimensionar. 0/undefined = no se dimensiona. */
+  accountSize?: number;
 }) {
   const [open, setOpen] = useState(false);
   const e = c.economics;
@@ -120,6 +124,10 @@ export default function SpreadCard({
         </div>
       )}
 
+      {accountSize != null && accountSize > 0 && (
+        <SpreadSizing c={c} accountSize={accountSize} />
+      )}
+
       {open && (
         <div className="wheel-outcomes">
           <div className="spread-block">
@@ -144,6 +152,61 @@ export default function SpreadCard({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Cuántos contratos caben con TU capital.
+ *
+ * El mandato §8 de venta de prima acota el riesgo por operación al 2–3% del
+ * capital, así que se enseñan los DOS extremos: es un rango, y publicar un solo
+ * número invita a tomarlo como "el" tamaño correcto.
+ *
+ * Reusa `sizeFor` del motor de la cuenta de paper (`lib/primaPaper`) A PROPÓSITO:
+ * si el screener manual y el ejecutor automático dimensionaran distinto, la cuenta
+ * de paper dejaría de medir lo mismo que haces a mano, y el win rate que sale de
+ * ahí ya no diría nada sobre tu operativa real.
+ *
+ * El capital vive en localStorage y NO viaja al servidor — la misma regla que el
+ * perfil de riesgo de /ideas.
+ */
+function SpreadSizing({ c, accountSize }: { c: SpreadCandidate; accountSize: number }) {
+  const min = sizeFor(c, accountSize, RISK_PER_TRADE_PCT);
+  const max = sizeFor(c, accountSize, RISK_PER_TRADE_MAX_PCT);
+  const riskPerContract = c.economics.maxRisk;
+  const creditPerContract = c.economics.credit * 100;
+  const lo = RISK_PER_TRADE_PCT * 100;
+  const hi = RISK_PER_TRADE_MAX_PCT * 100;
+
+  if (max < 1) {
+    // Capital para que UN contrato quepa en el borde alto del mandato.
+    const need = riskPerContract / RISK_PER_TRADE_MAX_PCT;
+    return (
+      <div className="spread-size none">
+        <b>0 contratos.</b> Un contrato arriesga {money(riskPerContract)}, más del {pct0(hi)} de
+        tus {money(accountSize)}. Para que entre uno harían falta ~{money(need)}.
+      </div>
+    );
+  }
+
+  const range = (a: number, b: number, fmt: (n: number) => string) =>
+    b > a ? `${fmt(a)}–${fmt(b)}` : fmt(a);
+
+  return (
+    <div className="spread-size">
+      <span className="spread-size-n">
+        <b>{range(min, max, (n) => String(n))}</b>
+        <small>contrato{max === 1 ? "" : "s"}</small>
+      </span>
+      <span>
+        Arriesgas <b>{range(min * riskPerContract, max * riskPerContract, money)}</b>{" "}
+        <small>({pct0(lo)}–{pct0(hi)} de {money(accountSize)})</small>
+      </span>
+      <span>
+        Cobras <b>{range(min * creditPerContract, max * creditPerContract, money)}</b>{" "}
+        <small>de crédito</small>
+      </span>
     </div>
   );
 }

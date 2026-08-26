@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_LOSS_PCT, MAX_OPEN, MAX_PER_SECTOR, PROFIT_FLOOR_PCT, START_EQUITY,
   closePosition, dteOn, lossPct, managePosition, maxRiskOf, planOpen, pnlOf,
-  positionFrom, profitPct, reprice, sizeFor, summarize,
+  positionFrom, profitPct, reprice, sizeFor, sizeForBand, summarize,
+  RISK_PER_TRADE_PCT, RISK_PER_TRADE_MAX_PCT,
   type PrimaPosition,
 } from "./primaPaper";
 import type { SpreadCandidate } from "./creditSpread";
@@ -169,6 +170,32 @@ describe("sizeFor", () => {
     expect(sizeFor(cand({ maxRisk: 458 }), 10_000)).toBe(0); // 200/458 → 0
     expect(sizeFor(cand({ maxRisk: 90 }), 10_000)).toBe(2);  // 200/90 → 2
   });
+
+  it("acepta otro % de riesgo sin cambiar el que usa la cuenta de paper", () => {
+    const c = cand({ maxRisk: 90 });
+    expect(sizeFor(c, 10_000)).toBe(2);                        // 2% por defecto
+    expect(sizeFor(c, 10_000, RISK_PER_TRADE_PCT)).toBe(2);    // explícito, igual
+    expect(sizeFor(c, 10_000, RISK_PER_TRADE_MAX_PCT)).toBe(3); // 300/90 → 3
+  });
+
+  it("el borde alto del mandato puede rescatar un candidato que el bajo descarta", () => {
+    // 458 de riesgo: al 2% ($200) no entra ninguno; al 3% ($300) tampoco.
+    expect(sizeFor(cand({ maxRisk: 458 }), 10_000, RISK_PER_TRADE_MAX_PCT)).toBe(0);
+    // 250 de riesgo: al 2% no entra, al 3% sí. Por eso la ficha enseña la banda.
+    expect(sizeFor(cand({ maxRisk: 250 }), 10_000)).toBe(0);
+    expect(sizeFor(cand({ maxRisk: 250 }), 10_000, RISK_PER_TRADE_MAX_PCT)).toBe(1);
+  });
+
+  it("sin capital o sin riesgo por contrato devuelve 0, no infinito", () => {
+    expect(sizeFor(cand({ maxRisk: 90 }), 0)).toBe(0);
+    expect(sizeFor(cand({ maxRisk: 90 }), -100)).toBe(0);
+    expect(sizeFor(cand({ maxRisk: 0 }), 10_000)).toBe(0);
+    expect(sizeFor(cand({ maxRisk: 90 }), 10_000, 0)).toBe(0);
+  });
+
+  it("escala con el capital", () => {
+    expect(sizeFor(cand({ maxRisk: 100 }), 50_000)).toBe(10); // 1000/100
+  });
 });
 
 describe("positionFrom", () => {
@@ -319,5 +346,71 @@ describe("summarize — capital acumulativo", () => {
 
   it("la curva lleva un punto por operación más el inicio", () => {
     expect(summarize([ganada(250), ganada(-100)], []).equityCurve).toEqual([10_000, 10_250, 10_150]);
+  });
+});
+
+/**
+ * Regresión de "la cuenta solo abre SPY y QQQ" (2026-08-24).
+ *
+ * El 2% clavado convertía el borde bajo del mandato §8 en un suelo DURO: con $10.000
+ * son $200 por operación, y un spread de $2,50 de ancho arriesga ~$230 — dentro de la
+ * banda 2–3%, pero `floor(200/230)` da CERO. Como los strikes de las acciones caras
+ * van de $2,50 en $2,50, el spread más estrecho posible ahí ya no cabía, y solo
+ * quedaban SPY/QQQ/IWM, los únicos con grid de $1. De 16 candidatos válidos se
+ * abrieron 2, los dos índices.
+ */
+describe("sizeForBand — dimensionar por la banda 2–3%, no por su borde bajo", () => {
+  it("lo que cabe al 2% se dimensiona al 2%, sin estirar nada", () => {
+    // SPY 747/746: ancho $1, crédito $0.07 → riesgo $93/contrato.
+    const spy = cand({ ticker: "SPY", maxRisk: 93 });
+    const r = sizeForBand(spy, 10_000);
+    expect(r.contracts).toBe(2);            // igual que antes: 200/93
+    expect(r.riskPct).toBeCloseTo(0.0186, 4); // 186/10.000 = 1,86%
+  });
+
+  it("un spread de $2,50 entra con UN contrato por el tope del mandato", () => {
+    // AAPL 325/327.5: ancho $2,50, crédito ~$0.20 → riesgo $230.
+    const aapl = cand({ ticker: "AAPL", width: 2.5, credit: 0.2, maxRisk: 230 });
+    expect(sizeFor(aapl, 10_000)).toBe(0);   // el comportamiento viejo lo tiraba
+    const r = sizeForBand(aapl, 10_000);
+    expect(r.contracts).toBe(1);
+    expect(r.riskPct).toBeCloseTo(0.023, 4); // 2,3%: dentro de la banda 2–3%
+  });
+
+  it("NUNCA estira para poner más de uno", () => {
+    // Al 3% cabrían 2 contratos de $140, pero estirar el mandato solo sirve para
+    // entrar donde no se entraba, no para agrandar una posición que ya cabía.
+    const c = cand({ maxRisk: 140 });
+    expect(sizeFor(c, 10_000, 0.03)).toBe(2);
+    expect(sizeForBand(c, 10_000).contracts).toBe(1);
+  });
+
+  it("lo que no cabe ni al 3% sigue fuera", () => {
+    // Ancho $5 → riesgo ~$458, más del 4,5% de la cuenta.
+    const ancho = cand({ maxRisk: 458 });
+    expect(sizeForBand(ancho, 10_000).contracts).toBe(0);
+  });
+
+  it("con más capital, el mismo spread vuelve al borde bajo", () => {
+    const aapl = cand({ width: 2.5, credit: 0.2, maxRisk: 230 });
+    const r = sizeForBand(aapl, 25_000); // 2% = $500 → 2 contratos sin estirar
+    expect(r.contracts).toBe(2);
+    expect(r.riskPct).toBeCloseTo(0.0184, 4);
+  });
+
+  it("sin capital no dimensiona nada", () => {
+    expect(sizeForBand(cand({ maxRisk: 93 }), 0).contracts).toBe(0);
+  });
+});
+
+describe("positionFrom guarda el riesgo asumido", () => {
+  it("apunta el % de capital arriesgado para no mezclar tamaños en el win rate", () => {
+    const p = positionFrom(cand({ maxRisk: 230 }), 1, "VP-1", new Date("2026-08-24T15:45:00Z"), true, 5, 0.023);
+    expect(p.riskPctUsed).toBe(0.023);
+  });
+
+  it("es opcional: las posiciones viejas nacieron sin él", () => {
+    const p = positionFrom(cand(), 1, "VP-2", new Date("2026-08-24T15:45:00Z"));
+    expect(p.riskPctUsed).toBeUndefined();
   });
 });

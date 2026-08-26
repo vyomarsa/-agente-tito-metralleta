@@ -146,6 +146,73 @@ export async function tastytradeDisconnect(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Tope de tiempo del REST
+// ---------------------------------------------------------------------------
+
+/**
+ * Tope por intento contra el REST de Tastytrade.
+ *
+ * Sin tope, un `fetch` pelado espera lo que haga falta, y la Tarjeta de Decisión
+ * se quedaba colgada con él. Medido el 2026-08-26 sobre `/option-chains/nested`,
+ * la latencia es **bimodal**: lo normal son 0,5–1,5 s (y 6,2–7,3 s en SPX, que es
+ * la cadena más grande), pero de vez en cuando una llamada se atasca y sale
+ * SIEMPRE en **21,03–21,07 s** — cinco muestras clavadas en el mismo valor, o sea
+ * un tope de algo suyo, no una cuesta. Esperar ese atasco no aporta nada.
+ *
+ * 12 s deja ~1,6× de margen sobre el peor SPX legítimo observado y corta el atasco
+ * mucho antes. Bajarlo de 8 s empezaría a cortar cadenas grandes de verdad.
+ *
+ * Ajustable con `TASTYTRADE_REST_TIMEOUT_MS`, como `MASSIVE_MAX_RPM` en el
+ * regulador de Massive: si algún día su API se pone lenta de forma sostenida, se
+ * sube sin tocar código.
+ */
+const REST_TIMEOUT_DEFAULT_MS = 12_000;
+
+function restTimeoutMs(): number {
+  const n = Number(process.env.TASTYTRADE_REST_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : REST_TIMEOUT_DEFAULT_MS;
+}
+
+/** Un reintento y no más: el atasco es aislado — la llamada siguiente vuelve a ir a 0,5 s. */
+const REST_INTENTOS = 2;
+
+function esCorteDeTiempo(err: unknown): boolean {
+  const name = (err as { name?: string } | null)?.name;
+  return name === "TimeoutError" || name === "AbortError";
+}
+
+/**
+ * `fetch` con tope de tiempo y UN reintento.
+ *
+ * **Solo reintenta el corte de tiempo y el fallo de red.** Un error HTTP NO se
+ * reintenta y sale tal cual: un 401 va a volver a ser 401, y machacar un 429 es la
+ * peor respuesta posible a un límite de tasa. Quien llama distingue los dos casos
+ * por el mensaje del `TastytradeError`.
+ */
+async function fetchConTope(
+  url: string,
+  init: RequestInit,
+  quePide: string,
+  timeoutMs = restTimeoutMs(),
+): Promise<Response> {
+  let ultimo: unknown;
+  for (let intento = 1; intento <= REST_INTENTOS; intento++) {
+    try {
+      return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    } catch (err) {
+      ultimo = err;
+      if (!esCorteDeTiempo(err) && !(err instanceof TypeError)) throw err;
+    }
+  }
+  const motivo = esCorteDeTiempo(ultimo)
+    ? `no respondió en ${Math.round(timeoutMs / 1000)} s`
+    : "no se pudo alcanzar";
+  throw new TastytradeError(
+    `Tastytrade ${motivo} al pedir ${quePide} (${REST_INTENTOS} intentos). Reintenta en unos segundos.`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // OAuth2 personal grant — refresca el access token
 // ---------------------------------------------------------------------------
 
@@ -157,20 +224,26 @@ interface TokenResponse {
 }
 
 async function fetchAccessToken(): Promise<StoredToken> {
-  const res = await fetch(`${baseUrl()}/oauth/token`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      "User-Agent": USER_AGENT,
+  // El token va TAMBIÉN con tope: es lo primero de cada llamada, así que un atasco
+  // aquí cuelga por igual la cadena, los greeks y las métricas.
+  const res = await fetchConTope(
+    `${baseUrl()}/oauth/token`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "User-Agent": USER_AGENT,
+      },
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        client_secret: clientSecret(),
+        refresh_token: refreshToken(),
+      }),
+      cache: "no-store",
     },
-    body: JSON.stringify({
-      grant_type: "refresh_token",
-      client_secret: clientSecret(),
-      refresh_token: refreshToken(),
-    }),
-    cache: "no-store",
-  });
+    "el access token",
+  );
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new TastytradeError(
@@ -213,16 +286,21 @@ async function getAccessToken(): Promise<string> {
 // Llamadas autenticadas a la API
 // ---------------------------------------------------------------------------
 
-async function getJson<T>(pathAndQuery: string): Promise<T> {
+async function getJson<T>(pathAndQuery: string, timeoutMs = restTimeoutMs()): Promise<T> {
   const token = await getAccessToken();
-  const res = await fetch(`${baseUrl()}${pathAndQuery}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json",
-      "User-Agent": USER_AGENT,
+  const res = await fetchConTope(
+    `${baseUrl()}${pathAndQuery}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        "User-Agent": USER_AGENT,
+      },
+      cache: "no-store",
     },
-    cache: "no-store",
-  });
+    pathAndQuery.split("?")[0],
+    timeoutMs,
+  );
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new TastytradeError(describeStatus(res.status, body), {
@@ -404,6 +482,18 @@ export async function fetchQuoteToken(): Promise<QuoteToken> {
  * vencimientos (por ventana de DTE o por los N más cercanos), corre el snapshot del
  * streamer y devuelve el meta por símbolo + lo recogido + el símbolo subyacente.
  */
+/**
+ * Símbolo del subyacente en el streamer (dxFeed) cuando NO coincide con el ticker.
+ *
+ * Verificado el 2026-08-24 suscribiendo `Quote`: `BRK/B` cotiza (mid 498.16) y ni
+ * `BRKB` ni `BRK.B` devuelven nada. Ojo: el REST de Tastytrade sí quiere `BRKB`
+ * (`/option-chains/BRKB/nested` da 15 vencimientos, `BRK.B` da 0), así que las dos
+ * formas conviven a propósito — esta tabla traduce SOLO para el streamer.
+ */
+const STREAMER_UNDERLYING: Record<string, string> = {
+  BRKB: "BRK/B",
+};
+
 async function streamChain(
   clean: string,
   filter: ChainFilter,
@@ -440,7 +530,10 @@ async function streamChain(
     }
   }
   // Símbolo del subyacente en dxFeed = el ticker plano (equities/ETFs).
-  const underlying = opts.includeUnderlying ? clean : null;
+  // El SUBYACENTE en el streamer no siempre se escribe como el ticker del REST:
+  // las clases de acción llevan barra en dxFeed. Sin esta traducción, `BRKB` no
+  // cotiza, el spot sale null y el símbolo se descarta entero por "sin precio".
+  const underlying = opts.includeUnderlying ? (STREAMER_UNDERLYING[clean] ?? clean) : null;
   const symbols = [...meta.keys()];
   if (underlying) symbols.push(underlying);
   if (symbols.length === 0) return { meta, snap: new Map(), underlying };
@@ -485,14 +578,142 @@ export async function fetchTastytradeGreeks(
  * escáneres de spreads/wheel. Server-only. Lanza TastytradeError si falla → el
  * llamador cae a MarketSnack/Massive.
  */
+/**
+ * Spot del subyacente por el streamer, SIN bajar la cadena entera.
+ *
+ * El 0DTE lo derivaba por paridad put-call porque Massive no da precio con el plan
+ * gratis. Aquí se pide directo: una suscripción `Quote` de UN símbolo, ~2 s. El
+ * snapshot no resuelve por "todos con greeks" (un subyacente no tiene), así que
+ * cierra por el temporizador de silencio — de ahí el timeout corto.
+ */
+export async function fetchTastytradeSpot(
+  ticker: string,
+  opts: { quoteToken?: QuoteToken; timeoutMs?: number } = {},
+): Promise<number | null> {
+  const clean = ticker.trim().toUpperCase();
+  if (!clean) return null;
+  const symbol = STREAMER_UNDERLYING[clean] ?? clean;
+  const tok = opts.quoteToken ?? (await fetchQuoteToken());
+  const { dxlinkSnapshot } = await import("./tastytradeStream");
+  const snap = await dxlinkSnapshot({
+    url: tok.url, token: tok.token, symbols: [symbol], timeoutMs: opts.timeoutMs ?? 5000,
+  });
+  const u = snap.get(symbol);
+  if (u?.bid != null && u?.ask != null && u.bid > 0 && u.ask > 0) return (u.bid + u.ask) / 2;
+  // Fuera de sesión puede llegar el último trade y no la horquilla.
+  return u?.last != null && u.last > 0 ? u.last : null;
+}
+
+/** Cotización de un subyacente tal y como la sirve el streamer. */
+export interface TtQuote {
+  price: number | null;
+  change: number | null;
+  changePercent: number | null;
+  prevClose: number | null;
+  dayOpen: number | null;
+  dayHigh: number | null;
+  dayLow: number | null;
+  dayVolume: number | null;
+}
+
+/**
+ * Cotizaciones de varios subyacentes por UNA conexión de streamer.
+ *
+ * Reemplaza al snapshot masivo de Massive, que en el plan gratis responde
+ * **403 NOT_AUTHORIZED** (verificado 2026-08-24) — por eso la cinta de arriba
+ * salía entera en "—". Precio = último operado, y si no ha operado, el mid de la
+ * horquilla. La variación sale contra `prevDayClosePrice` del evento Summary.
+ */
+export async function fetchTastytradeQuotes(
+  tickers: string[],
+  opts: { quoteToken?: QuoteToken; timeoutMs?: number } = {},
+): Promise<Map<string, TtQuote>> {
+  const out = new Map<string, TtQuote>();
+  const limpios = [...new Set(tickers.map((t) => t.trim().toUpperCase()).filter(Boolean))];
+  if (limpios.length === 0) return out;
+
+  // El streamer usa otra forma para las clases de acción (BRKB → BRK/B).
+  const aStreamer = new Map(limpios.map((t) => [STREAMER_UNDERLYING[t] ?? t, t]));
+  const tok = opts.quoteToken ?? (await fetchQuoteToken());
+  const { dxlinkUnderlyings } = await import("./tastytradeStream");
+  const snap = await dxlinkUnderlyings({
+    url: tok.url, token: tok.token, symbols: [...aStreamer.keys()], timeoutMs: opts.timeoutMs,
+  });
+
+  for (const [sym, f] of snap) {
+    const ticker = aStreamer.get(sym);
+    if (!ticker) continue;
+    const mid = f.bid != null && f.ask != null ? (f.bid + f.ask) / 2 : null;
+    const price = f.last ?? mid;
+    const prev = f.prevClose ?? null;
+    const change = price != null && prev != null ? price - prev : null;
+    out.set(ticker, {
+      price,
+      change,
+      changePercent: change != null && prev ? (change / prev) * 100 : null,
+      prevClose: prev,
+      dayOpen: f.dayOpen ?? null,
+      dayHigh: f.dayHigh ?? null,
+      dayLow: f.dayLow ?? null,
+      dayVolume: f.dayVolume ?? null,
+    });
+  }
+  return out;
+}
+
+/** Periodo dxFeed por timeframe de la app. */
+const CANDLE_PERIOD: Record<string, string> = {
+  "1y": "d",
+  "15m10d": "15m",
+  "5m5d": "5m",
+};
+
+/**
+ * Velas del subyacente por el streamer. Tastytrade NO las da por REST: van por
+ * DXLink con el evento `Candle` y símbolos tipo `AAPL{=d}` / `AAPL{=5m}`.
+ *
+ * Verificado contra producción el 2026-08-24: las diarias coinciden al céntimo con
+ * las de Massive (AAPL 21-ago 309.35 · 20-ago 311.30) y las de 5m traen el día en
+ * curso **en premarket**, que el plan gratis de Massive ni siquiera tiene.
+ */
+export async function fetchTastytradeCandles(
+  ticker: string,
+  tf: string,
+  days: number,
+  opts: { quoteToken?: QuoteToken; timeoutMs?: number } = {},
+): Promise<{ time: number; open: number; high: number; low: number; close: number }[]> {
+  const clean = ticker.trim().toUpperCase();
+  const period = CANDLE_PERIOD[tf];
+  if (!clean || !period) return [];
+  const base = STREAMER_UNDERLYING[clean] ?? clean;
+  const tok = opts.quoteToken ?? (await fetchQuoteToken());
+  const { dxlinkCandles } = await import("./tastytradeStream");
+  const velas = await dxlinkCandles({
+    url: tok.url,
+    token: tok.token,
+    symbol: `${base}{=${period}}`,
+    fromTime: Date.now() - days * 24 * 60 * 60 * 1000,
+    timeoutMs: opts.timeoutMs,
+  });
+  // TfBar espera segundos UNIX; dxFeed entrega epoch ms.
+  return velas.map((v) => ({
+    time: Math.floor(v.time / 1000),
+    open: v.open, high: v.high, low: v.low, close: v.close,
+  }));
+}
+
 export async function fetchTastytradeChain(
   ticker: string,
-  opts: { dteMin?: number; dteMax?: number; timeoutMs?: number; quoteToken?: QuoteToken } = {},
+  opts: {
+    dteMin?: number; dteMax?: number; timeoutMs?: number; quoteToken?: QuoteToken;
+    /** Nº de vencimientos más cercanos, cuando no se filtra por DTE. */
+    expirations?: number;
+  } = {},
 ): Promise<{ spot: number | null; contracts: TtContract[] }> {
   const clean = ticker.trim().toUpperCase();
   if (!clean) return { spot: null, contracts: [] };
   const { meta, snap, underlying } = await streamChain(
-    clean, { dteMin: opts.dteMin, dteMax: opts.dteMax },
+    clean, { dteMin: opts.dteMin, dteMax: opts.dteMax, expirations: opts.expirations },
     { timeoutMs: opts.timeoutMs, includeUnderlying: true, preToken: opts.quoteToken },
   );
 

@@ -8,7 +8,12 @@
 //
 // La parte pura (estimateNextEarnings, earningsFlag) no toca red.
 
-import type { EarningsFlag } from "./wheel";
+/**
+ * Bandera de earnings de un vencimiento. VIVE AQUÍ, no en wheel.ts, porque este
+ * es el módulo que la CALCULA: la definía wheel.ts por accidente histórico y eso
+ * ataba `creditSpread` (venta de prima) a la Wheel por un solo tipo.
+ */
+export type EarningsFlag = "fuera" | "dentro" | "dentro_confirmado" | "no_aplica";
 
 const QUARTER_DAYS = 91;
 const DAY = 24 * 60 * 60 * 1000;

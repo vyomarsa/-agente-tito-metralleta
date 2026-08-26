@@ -19,7 +19,7 @@
 import type { Chain2Contract } from "./optionChain2";
 import { gexByStrike, totalGex } from "./optionChain2";
 import { estimateIV } from "./gex";
-import { expectedMove } from "./expectedMove";
+import { expectedMove, probTouch } from "./expectedMove";
 import type { FlowRow } from "./flow";
 
 /** Solo strikes dentro de ±este % del spot entran a la vista 0DTE. */
@@ -71,6 +71,19 @@ export interface ZeroDteScenario {
   target: number;
   changePct: number;
   driver: string;
+  /** P(el precio TOQUE el objetivo antes del cierre), 0-1. Reflexión sobre lognormal. */
+  touchProb: number;
+  /** Strike de la cadena más cercano al objetivo (la "zona de atracción"). */
+  attractionStrike: number | null;
+  /** Contratos abiertos (OI call + put) en ese strike: cuánto dinero lo ancla. */
+  attractionContracts: number;
+}
+
+/** Ratio put/call del día, por volumen negociado en TODA la cadena. */
+export interface ZeroDtePutCall {
+  ratio: number | null;
+  puts: number;
+  calls: number;
 }
 
 export interface ZeroDteAnalysis {
@@ -88,6 +101,14 @@ export interface ZeroDteAnalysis {
   totalGex: number;
   maxCall: ZeroDteWall | null;
   maxPut: ZeroDteWall | null;
+  /** Strike con MÁS VOLUMEN de calls hoy (≠ maxCall, que va por Open Interest). */
+  topVolumeCall: ZeroDteWall | null;
+  /** Strike con MÁS VOLUMEN de puts hoy. */
+  topVolumePut: ZeroDteWall | null;
+  /** Put/Call ratio del día por volumen, sobre la cadena completa. */
+  putCall: ZeroDtePutCall;
+  /** Cuántos strikes entraron al cálculo de GEX y qué % de contratos traía gamma real. */
+  gammaCoverage: { strikes: number; contracts: number; withGamma: number; pct: number };
   lean: "alcista" | "bajista" | "lateral";
   /** Confianza del sesgo, 0-100. */
   confidence: number;
@@ -233,8 +254,13 @@ export function buildZeroDte(input: ZeroDteInput): ZeroDteAnalysis {
   const maxVolume = strikes.reduce((m, s) => Math.max(m, s.callVolume, s.putVolume), 0);
 
   // ── Muros por Open Interest (concepto de "muro" del Proceso Principal) ──
+  // Y, en paralelo, los strikes de más VOLUMEN de HOY: el OI es la posición vieja
+  // (dónde está el dinero comprometido) y el volumen es la batalla de la sesión.
+  // El 0DTE se opera contra el volumen, así que hacen falta los dos.
   let maxCall: ZeroDteWall | null = null;
   let maxPut: ZeroDteWall | null = null;
+  let topVolumeCall: ZeroDteWall | null = null;
+  let topVolumePut: ZeroDteWall | null = null;
   for (const s of strikes) {
     if (s.call && (!maxCall || s.call.openInterest > maxCall.openInterest)) {
       maxCall = { strike: s.strike, openInterest: s.call.openInterest, volume: s.call.volume, side: "call" };
@@ -242,7 +268,32 @@ export function buildZeroDte(input: ZeroDteInput): ZeroDteAnalysis {
     if (s.put && (!maxPut || s.put.openInterest > maxPut.openInterest)) {
       maxPut = { strike: s.strike, openInterest: s.put.openInterest, volume: s.put.volume, side: "put" };
     }
+    if (s.call && s.call.volume > 0 && (!topVolumeCall || s.call.volume > topVolumeCall.volume)) {
+      topVolumeCall = { strike: s.strike, openInterest: s.call.openInterest, volume: s.call.volume, side: "call" };
+    }
+    if (s.put && s.put.volume > 0 && (!topVolumePut || s.put.volume > topVolumePut.volume)) {
+      topVolumePut = { strike: s.strike, openInterest: s.put.openInterest, volume: s.put.volume, side: "put" };
+    }
   }
+
+  // ── Put/Call ratio y cobertura de gamma sobre la cadena COMPLETA ──
+  // (no solo la ventana cercana al spot: el ratio del día es de toda la cadena).
+  let callVolAll = 0, putVolAll = 0, withGamma = 0;
+  for (const c of contracts) {
+    if (c.type === "call") callVolAll += c.volume; else putVolAll += c.volume;
+    if (c.gamma != null) withGamma += 1;
+  }
+  const putCall: ZeroDtePutCall = {
+    ratio: callVolAll > 0 ? putVolAll / callVolAll : null,
+    puts: putVolAll,
+    calls: callVolAll,
+  };
+  const gammaCoverage = {
+    strikes: gexStrikes.length,
+    contracts: contracts.length,
+    withGamma,
+    pct: contracts.length > 0 ? Math.round((withGamma / contracts.length) * 100) : 0,
+  };
 
   // ── Imán del GEX: strike de mayor |gamma neta| cerca del spot ──
   let magnet: number | null = null;
@@ -302,31 +353,71 @@ export function buildZeroDte(input: ZeroDteInput): ZeroDteAnalysis {
   const clip = (x: number) => Math.min(Math.max(x, em.lower2), em.upper2);
 
   const pctChange = (t: number) => (spot > 0 ? ((t - spot) / spot) * 100 : 0);
+
+  /**
+   * Zona de atracción de un objetivo: el strike de la cadena más cercano y cuántos
+   * contratos abiertos (OI call + put) lo anclan. Es la diferencia entre "el modelo
+   * dice 7700" y "el modelo dice 7700 y ahí hay 6.746 contratos sosteniéndolo".
+   */
+  const attractionAt = (target: number): { strike: number | null; contracts: number } => {
+    let bestStrike: number | null = null;
+    let bestDist = Infinity;
+    for (const s of strikes) {
+      const d = Math.abs(s.strike - target);
+      if (d < bestDist) { bestDist = d; bestStrike = s.strike; }
+    }
+    if (bestStrike == null) return { strike: null, contracts: 0 };
+    const row = strikes.find((s) => s.strike === bestStrike);
+    return {
+      strike: bestStrike,
+      contracts: (row?.call?.openInterest ?? 0) + (row?.put?.openInterest ?? 0),
+    };
+  };
+
+  /** Cada escenario se acompaña de su probabilidad de TOQUE y de su ancla de OI. */
+  const enrich = (
+    kind: ZeroDteScenario["kind"],
+    target: number,
+    driver: string,
+  ): ZeroDteScenario => {
+    const at = attractionAt(target);
+    return {
+      kind,
+      target,
+      changePct: pctChange(target),
+      driver,
+      touchProb: probTouch(spot, target, iv, Math.max(horizonDays, 1 / (390 * 24))),
+      attractionStrike: at.strike,
+      attractionContracts: at.contracts,
+    };
+  };
+
   const scenarios = {
-    base: {
-      kind: "base" as const,
-      target: baseTarget,
-      changePct: pctChange(baseTarget),
-      driver: magnet != null
+    base: enrich(
+      "base",
+      baseTarget,
+      magnet != null
         ? `Imán del GEX en $${baseTarget.toFixed(2)} — ${regime === "positive" ? "el dealer estabiliza (γ+): tiende a frenar ahí" : "el dealer amplifica (γ−): si llega, acelera"}`
         : "Sin gamma suficiente para fijar un imán; se toma el spot",
-    },
-    bull: {
-      kind: "bull" as const,
-      target: clip(bullTarget),
-      changePct: pctChange(clip(bullTarget)),
-      driver: maxCall
+    ),
+    // El motivo tiene que decir qué mandó DE VERDAD. El objetivo alcista es el
+    // máximo entre el muro y el techo de 1σ (y el bajista, el mínimo), así que
+    // atribuirlo siempre al muro mentía cuando ganaba la volatilidad: se veía
+    // "muro de puts en $765" con el objetivo puesto en $762.
+    bull: enrich(
+      "bull",
+      clip(bullTarget),
+      maxCall && Math.abs(clip(bullTarget) - maxCall.strike) < 1e-9
         ? `Muro de calls (MAX CALL) en $${maxCall.strike.toFixed(2)}: resistencia del día`
-        : "Techo de 1σ intradía",
-    },
-    bear: {
-      kind: "bear" as const,
-      target: clip(bearTarget),
-      changePct: pctChange(clip(bearTarget)),
-      driver: maxPut
+        : "Techo de 1σ intradía: hasta ahí llega la volatilidad que queda",
+    ),
+    bear: enrich(
+      "bear",
+      clip(bearTarget),
+      maxPut && Math.abs(clip(bearTarget) - maxPut.strike) < 1e-9
         ? `Muro de puts (MAX PUT) en $${maxPut.strike.toFixed(2)}: soporte del día`
-        : "Suelo de 1σ intradía",
-    },
+        : "Suelo de 1σ intradía: hasta ahí llega la volatilidad que queda",
+    ),
   };
 
   return {
@@ -340,6 +431,10 @@ export function buildZeroDte(input: ZeroDteInput): ZeroDteAnalysis {
     totalGex: total,
     maxCall,
     maxPut,
+    topVolumeCall,
+    topVolumePut,
+    putCall,
+    gammaCoverage,
     lean,
     confidence,
     leanScore,
