@@ -88,8 +88,12 @@ export interface ZeroDtePutCall {
 
 export interface ZeroDteAnalysis {
   spot: number;
-  /** IV representativa (decimal) usada para el cono intradía. */
+  /** IV usada para PROYECTAR (vol realizada, decimal). Ver `coneIv`. */
   iv: number;
+  /** IV ATM que cobra la CADENA hoy (decimal). Informativa: NO se proyecta con ella. */
+  chainIv: number;
+  /** De dónde sale `iv`: medida de verdad, o el relleno de `FALLBACK_IV`. */
+  ivSource: "realizada" | "reserva";
   strikes: ZeroDteStrike[];
   /** Volumen máximo por strike (call o put) para escalar el histograma. */
   maxVolume: number;
@@ -180,7 +184,56 @@ function legOf(c: Chain2Contract): ZeroDteLeg {
   };
 }
 
-/** IV representativa (decimal): media ATM de la cadena; si no hay, vol realizada. */
+/**
+ * IV con la que se PROYECTA: cono de 1σ, escenarios y probabilidades de toque.
+ *
+ * NO es la de la cadena, y la diferencia no es un matiz. Una opción a la que le
+ * quedan horas tiene una prima diminuta, y la IV de Black-Scholes que cuadra con
+ * esa prima se dispara — es el artefacto conocido del 0DTE, no una señal de que
+ * el subyacente vaya a moverse. Medido el 2026-08-26 con el mercado abierto:
+ *
+ *   IV ATM de la cadena  119%  →  implica 6,24% de recorrido diario en SPY
+ *   VIX (15,21)                →  implica 0,80%
+ *   SPY de verdad, 10 sesiones →           0,52%
+ *
+ * O sea, el cono proyectaba **12× lo que el subyacente recorre**. Con 1σ inflado
+ * así, el objetivo del modelo de momentum —que se acota justo a 1σ— acababa a un
+ * 1% del precio en un día en que SPY recorre medio punto. En el libro de paper se
+ * ve el resultado: de las 7 operaciones con el objetivo a más del 0,58%, NINGUNA
+ * llegó.
+ *
+ * La vol realizada de las últimas 22 sesiones sí mide lo que el subyacente hace.
+ * Verificado tras el cambio: SPY 12,9% → 0,68% diario y QQQ 22,1% → 1,16%, contra
+ * un recorrido real de 0,52% y 0,94%.
+ *
+ * LIMITACIÓN DECLARADA: mirando hacia atrás, un día de evento (FOMC, CPI) lo coge
+ * tarde — ahí la implícita sube ANTES y la realizada aún no. Se asume a sabiendas:
+ * quedarse corto en un día de evento cuesta una oportunidad; irse 12× de largo
+ * todos los días costaba dinero de verdad, y eso es lo que estaba pasando.
+ */
+export function coneIv(closes: number[]): number {
+  return estimateIV(closes);
+}
+
+/**
+ * ¿La vol del cono es REAL o es el valor de reserva?
+ *
+ * `estimateIV` devuelve `FALLBACK_IV` (0,4 = 40%) cuando no le llegan al menos 3
+ * cierres, y ese 40% no es la volatilidad de nadie — es un relleno. Pasó de
+ * verdad: QQQ proyectaba exactamente 40,0% porque sus barras diarias venían
+ * vacías. Que el fallo sea VISIBLE es el punto: un cono de reserva presentado
+ * como si fuera medido es peor que no tener cono.
+ */
+export function coneIvSource(closes: number[]): "realizada" | "reserva" {
+  return closes.filter((v) => v > 0).length >= 3 ? "realizada" : "reserva";
+}
+
+/**
+ * IV representativa de la CADENA (decimal): media ATM; si no hay, vol realizada.
+ *
+ * Es lo que el mercado está cobrando hoy — informativo y se enseña —, pero NO
+ * sirve para proyectar en un 0DTE. Para eso está `coneIv`.
+ */
 export function representativeIv(contracts: Chain2Contract[], closes: number[]): number {
   const atm = contracts.filter(
     (c) => c.iv != null && c.iv > 0 && c.iv <= 3 && c.delta != null && Math.abs(c.delta) >= 0.35 && Math.abs(c.delta) <= 0.65,
@@ -205,7 +258,11 @@ export interface ZeroDteInput {
 /** Construye la vista 0DTE a partir de la cadena normalizada de MarketSnack. */
 export function buildZeroDte(input: ZeroDteInput): ZeroDteAnalysis {
   const { contracts, spot, closes, horizonDays } = input;
-  const iv = representativeIv(contracts, closes);
+  // `iv` = la de PROYECTAR (vol realizada). `chainIv` = la que cobra el mercado,
+  // solo para enseñarla. Todo lo que dibuja o calcula probabilidades usa `iv`.
+  const iv = coneIv(closes);
+  const chainIv = representativeIv(contracts, closes);
+  const ivSource = coneIvSource(closes);
   const em = expectedMove(spot, iv, Math.max(horizonDays, 0.01));
 
   // ── GEX real por strike (gamma de MarketSnack, sin Black-Scholes) ──
@@ -423,6 +480,8 @@ export function buildZeroDte(input: ZeroDteInput): ZeroDteAnalysis {
   return {
     spot,
     iv,
+    chainIv,
+    ivSource,
     strikes,
     maxVolume,
     magnet,

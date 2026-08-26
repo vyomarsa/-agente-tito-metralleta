@@ -37,6 +37,8 @@ function analysis(over: Partial<ZeroDteAnalysis> = {}): ZeroDteAnalysis {
   return {
     spot: 100,
     iv: 0.2,
+    chainIv: 0.2,
+    ivSource: "realizada" as const,
     strikes,
     maxVolume: 1000,
     magnet: 101,

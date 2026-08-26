@@ -666,7 +666,7 @@ function ZeroSummary({ a }: { a: ZeroDteAnalysis }) {
       <div className="z-sum-card">
         <span className="z-sum-lbl">Rango 1σ</span>
         <b>{px.format(a.expectedRange.low)}</b>
-        <span className="z-sum-sub">a {px.format(a.expectedRange.high)} · IV {(a.iv * 100).toFixed(1)}%</span>
+        <span className="z-sum-sub">a {px.format(a.expectedRange.high)} · vol {(a.iv * 100).toFixed(1)}%</span>
       </div>
     </div>
   );
@@ -772,7 +772,9 @@ function ZeroScenarios({
       <header>
         <h2>Escenarios hasta el cierre</h2>
         <span>
-          {horizon} · IV {(a.iv * 100).toFixed(1)}% · 1σ = ±{sigmaPts.toFixed(2)} pts ({a.expectedRange.sigmaPct.toFixed(2)}%)
+          {horizon} · vol {a.ivSource === "reserva" ? "DE RESERVA ⚠" : "realizada"}{" "}
+          {(a.iv * 100).toFixed(1)}% · 1σ = ±{sigmaPts.toFixed(2)} pts (
+          {a.expectedRange.sigmaPct.toFixed(2)}%) · IV de la cadena {(a.chainIv * 100).toFixed(0)}%
         </span>
       </header>
       {isToday && minutesLeft === 0 && (

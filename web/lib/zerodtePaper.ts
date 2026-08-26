@@ -53,6 +53,27 @@ export const MAX_SPREAD_PCT = 15;
 export type ZeroPaperStatus = "abierta" | "ganada" | "perdida" | "expirada";
 export type ZeroPaperCloseReason = "objetivo" | "stop" | "cierre_de_sesion";
 
+/**
+ * Versión de la GEOMETRÍA con la que se abrió la posición. Se sube cada vez que
+ * cambia lo que decide el objetivo o el stop.
+ *
+ *   v1  hasta el 2026-08-26 — el cono de 1σ se construía con la IV ATM de la
+ *       cadena, que en un 0DTE se dispara por el artefacto del vencimiento:
+ *       proyectaba 12× el recorrido real de SPY. Como el objetivo de momentum se
+ *       acota justo a 1σ, acababa donde el precio no llega. De las 7 operaciones
+ *       con el objetivo a más del 0,58%, ninguna llegó.
+ *   v2  desde el 2026-08-26 — el cono usa vol REALIZADA (`coneIv` en zerodte.ts).
+ *
+ * POR QUÉ SE GUARDA EN CADA POSICIÓN Y NO SOLO EN EL CÓDIGO: sin esto, las
+ * operaciones de mañana se promedian con las de v1 en el MISMO win rate y ya no
+ * hay forma de saber si el arreglo funcionó. Es la misma razón por la que las
+ * posiciones de Venta Prima guardan `expert`.
+ *
+ * Las 12 cerradas antes de que este campo existiera no lo traen: `undefined` se
+ * lee como v1, que es lo que eran. No se reescribe el libro.
+ */
+export const MODELO_VERSION = 2;
+
 export interface ZeroPaperPosition {
   id: string;
   openedAt: string;            // ISO
@@ -70,6 +91,8 @@ export interface ZeroPaperPosition {
   peakPrice: number;
   /** Modelo que la generó: reversión al imán o momentum γ−. */
   model: ZeroDteTrade["model"];
+  /** Geometría con la que nació. Ausente = v1 (ver MODELO_VERSION). */
+  modelVersion?: number;
   side: ZeroDteTrade["side"];
   /** Niveles del SUBYACENTE con los que se decide (no del contrato). */
   entrySpot: number;
@@ -183,6 +206,7 @@ export function planOpen(input: OpenInput): OpenPlan {
       currentPrice: ticket.mid,
       peakPrice: ticket.mid,
       model: trade.model,
+      modelVersion: MODELO_VERSION,
       side: trade.side,
       entrySpot: trade.entry,
       target: trade.target,
@@ -283,6 +307,11 @@ export interface ZeroPaperSummary {
   winRate: number | null;
   /** Por modelo, para ver cuál de los dos aporta. */
   byModel: { model: ZeroDteTrade["model"]; closed: number; wins: number; pnl: number; winRate: number | null }[];
+  /**
+   * Lo mismo, pero por VERSIÓN de la geometría. Es lo que responde "¿el arreglo
+   * del cono sirvió?": mezclar v1 y v2 en un solo win rate lo haría indistinguible.
+   */
+  byVersion: { version: number; closed: number; wins: number; pnl: number; winRate: number | null }[];
 }
 
 export function summarize(
@@ -311,6 +340,21 @@ export function summarize(
     };
   });
 
+  // `undefined` = v1: son las que se cerraron antes de que el campo existiera.
+  const versiones = [...new Set(closed.map((p) => p.modelVersion ?? 1))].sort((a, b) => a - b);
+  const byVersion = versiones.map((version) => {
+    const mine = closed.filter((p) => (p.modelVersion ?? 1) === version);
+    const w = mine.filter((p) => p.status === "ganada").length;
+    const l = mine.filter((p) => p.status === "perdida").length;
+    return {
+      version,
+      closed: mine.length,
+      wins: w,
+      pnl: round2(mine.reduce((s, p) => s + (p.realizedPnl ?? 0), 0)),
+      winRate: w + l > 0 ? Math.round((w / (w + l)) * 100) : null,
+    };
+  });
+
   return {
     equity: round2(startEquity + realizedPnl),
     startEquity,
@@ -323,6 +367,7 @@ export function summarize(
     expired,
     winRate: decided > 0 ? Math.round((wins / decided) * 100) : null,
     byModel,
+    byVersion,
   };
 }
 

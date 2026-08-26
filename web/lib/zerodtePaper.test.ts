@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_OPEN, MAX_SPREAD_PCT, NO_OPEN_LAST_MIN, START_EQUITY,
   closePosition, managePosition, maxRiskOf, planOpen, pnlOf, reprice,
-  returnPct, sizeFor, summarize,
+  returnPct, sizeFor, summarize, MODELO_VERSION,
   type ZeroPaperPosition,
 } from "./zerodtePaper";
 import type { ZeroDteTicket, ZeroDteTrade } from "./zerodteSignals";
@@ -257,5 +257,35 @@ describe("summarize", () => {
     const s = summarize([], [reprice(pos(), 1.5)]);
     expect(s.openPnl).toBe(30);
     expect(s.equity).toBe(START_EQUITY);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Versión de la geometría — para que el arreglo del cono se pueda MEDIR
+// ---------------------------------------------------------------------------
+
+describe("MODELO_VERSION", () => {
+  it("una posición nueva nace marcada con la versión actual", () => {
+    const plan = planOpen(openInput());
+    expect(plan.position?.modelVersion).toBe(MODELO_VERSION);
+  });
+
+  it("el resumen separa por versión y trata la ausencia como v1", () => {
+    const vieja = pos({ status: "perdida", realizedPnl: -100 });
+    delete (vieja as { modelVersion?: number }).modelVersion; // como las 12 del libro
+    const nueva = pos({ id: "Z-2", status: "ganada", realizedPnl: 50, modelVersion: 2 });
+
+    const s = summarize([vieja, nueva], []);
+    expect(s.byVersion.find((x) => x.version === 1)).toMatchObject({ closed: 1, wins: 0, pnl: -100, winRate: 0 });
+    expect(s.byVersion.find((x) => x.version === 2)).toMatchObject({ closed: 1, wins: 1, pnl: 50, winRate: 100 });
+  });
+
+  it("sin el desglose las dos geometrías se promediarían en un solo número", () => {
+    const s = summarize([
+      pos({ status: "perdida", realizedPnl: -100 }),
+      pos({ id: "Z-2", status: "ganada", realizedPnl: 50, modelVersion: 2 }),
+    ], []);
+    expect(s.winRate).toBe(50);      // el global mezcla…
+    expect(s.byVersion).toHaveLength(2); // …y el desglose es el que deja decidir
   });
 });

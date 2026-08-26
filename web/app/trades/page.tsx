@@ -880,6 +880,22 @@ function ZeroDtePanel({ zp }: { zp: ZpResponse | null }) {
         </div>
       )}
 
+      {/* Por VERSIÓN de la geometría. Solo se enseña si hay más de una: mientras
+          todas las cerradas sean del mismo modelo, este desglose no dice nada.
+          Con dos, es lo único que responde si el arreglo del cono sirvió. */}
+      {s.byVersion.length > 1 && (
+        <div className="vp-open">
+          {s.byVersion.map((v) => (
+            <div key={v.version} className="vp-openrow">
+              <b>{v.version === 1 ? "v1 · cono con IV de cadena" : `v${v.version} · cono con vol realizada`}</b>
+              <span className="vp-mut">{v.closed} cerrada(s) · {v.wins}W</span>
+              <span className="vp-strikes">{v.winRate != null ? `${v.winRate}%` : "—"}</span>
+              <span className={v.pnl >= 0 ? "up" : "down"}>{signed(v.pnl)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {abiertas.length > 0 && (
         <div className="vpp-list">
           {abiertas.map((p) => <ZeroPositionCard key={p.id} p={p} />)}

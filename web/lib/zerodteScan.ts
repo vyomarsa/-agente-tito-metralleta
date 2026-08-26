@@ -17,7 +17,8 @@
 // contra MarketSnack sin cambiar una sola decisión de la cuenta.
 // ============================================================================
 
-import { fetchCompany, fetchDailyBars } from "./massive";
+import { fetchCompany } from "./massive";
+import { cachedDailyBars } from "./barsStore";
 import { fetchTastytradeSpot } from "./tastytrade";
 import { fetchExpirations, fetchOptionChain2 } from "./marketsnack";
 import { normalizeChain2, dteOf, type Chain2Contract } from "./optionChain2";
@@ -125,7 +126,12 @@ export async function scanZeroDte(
     // símbolo (~2 s) y sirve también los índices (SPX), que Massive no cotiza.
     fetchTastytradeSpot(ticker).catch(() => null),
     fetchCompany(ticker).catch(() => null),
-    fetchDailyBars(ticker, 60).catch(() => []),
+    // Por el CACHE de disco, NO por Massive directo. `fetchDailyBars` con
+    // `.catch(() => [])` devolvía [] en silencio cuando se agotaba la cuota (5
+    // peticiones/minuto del plan gratis), y entonces `coneIv` caía al
+    // FALLBACK_IV de 0,4 — un 40% fijo que NO es la volatilidad de nadie.
+    // Verificado el 2026-08-26: QQQ proyectaba exactamente 40,0% por esto.
+    cachedDailyBars(ticker, 60, now).catch(() => [] as { close: number }[]),
   ]);
 
   const contracts = normalizeChain2(rawChain);
