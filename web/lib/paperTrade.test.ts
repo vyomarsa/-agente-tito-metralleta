@@ -386,3 +386,70 @@ describe("sin datos de mercado: qué puede y qué NO puede decidirse", () => {
     expect(t.exitPrice).toBeNull(); // sin liquidar a intrínseco: le falta el cierre del día
   });
 });
+
+/**
+ * Regresión del "64% junto a −$12.023" (2026-08-26).
+ *
+ * El win rate puntuaba TODO lo decidido y el P&L solo lo que tenía precio de
+ * salida: dos poblaciones distintas enseñadas juntas, imposibles de reconciliar
+ * de un vistazo. El criterio de acierto no cambia; lo que se añade es el mismo
+ * porcentaje sobre las operaciones que SÍ suman al dinero.
+ */
+describe("win rate con dinero vs por plan", () => {
+  const cerradaConPrecio = (over: Partial<PaperTrade> = {}) =>
+    trade({
+      status: "ganada", closeReason: "objetivo",
+      entryPrice: 1, exitPrice: 2, contracts: 1, ...over,
+    });
+  const cerradaSinPrecio = (over: Partial<PaperTrade> = {}) =>
+    trade({
+      status: "ganada", closeReason: "objetivo",
+      entryPrice: 1, exitPrice: null, contracts: 1, ...over,
+    });
+
+  it("las dos coinciden cuando TODAS tienen precio", () => {
+    const s = summarize([
+      cerradaConPrecio({ id: "a" }),
+      cerradaConPrecio({ id: "b", status: "perdida", closeReason: "stop", exitPrice: 0.5 }),
+    ]);
+    expect(s.winRatePct).toBe(50);
+    expect(s.winRatePricedPct).toBe(50);
+    expect(s.unpriced).toBe(0);
+  });
+
+  it("un acierto SIN precio infla el 'por plan' y no toca el 'con dinero'", () => {
+    const s = summarize([
+      cerradaConPrecio({ id: "a", status: "perdida", closeReason: "stop", exitPrice: 0.5 }),
+      cerradaSinPrecio({ id: "b" }), // acierto por plan, sin un dólar medido
+    ]);
+    expect(s.winRatePct).toBe(50);        // 1 de 2 decididas
+    expect(s.winRatePricedPct).toBe(0);   // 0 de 1 con dinero
+    expect(s.unpriced).toBe(1);
+    expect(s.priced).toBe(1);
+  });
+
+  it("reproduce la forma del caso real: muchos aciertos sin precio", () => {
+    const libro = [
+      ...Array.from({ length: 11 }, (_, i) => cerradaSinPrecio({ id: `sp${i}` })),
+      ...Array.from({ length: 10 }, (_, i) => cerradaConPrecio({ id: `p${i}` })),
+      ...Array.from({ length: 11 }, (_, i) =>
+        cerradaConPrecio({ id: `l${i}`, status: "perdida", closeReason: "stop", exitPrice: 0.5 })),
+    ];
+    const s = summarize(libro);
+    expect(s.wins + s.losses).toBe(32);       // el "por plan" puntúa 32…
+    expect(s.winsPriced + s.lossesPriced).toBe(21); // …y solo 21 tienen dinero
+    expect(s.winRatePct).toBeGreaterThan(s.winRatePricedPct!);
+  });
+
+  it("sin ningún cierre con precio, el 'con dinero' es null en vez de un 0% falso", () => {
+    const s = summarize([cerradaSinPrecio({ id: "a" })]);
+    expect(s.winRatePricedPct).toBeNull();
+    expect(s.winRatePct).toBe(100);
+  });
+
+  it("las caducadas no entran en ninguno de los dos", () => {
+    const s = summarize([trade({ id: "c", status: "expirada", closeReason: "caducada", entryPrice: null, exitPrice: null })]);
+    expect(s.winRatePct).toBeNull();
+    expect(s.winRatePricedPct).toBeNull();
+  });
+});

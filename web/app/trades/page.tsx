@@ -287,7 +287,23 @@ export default function TradesPage() {
           value={s ? `${s.wins}W · ${s.losses}L` : "—"}
           hint={s && s.unpriced > 0 ? `${s.unpriced} sin precio de salida` : undefined}
         />
-        <Stat label="Win rate" value={s?.winRatePct != null ? `${Math.round(s.winRatePct)}%` : "—"} hint={s?.winRatePct != null ? "por objetivo/stop" : undefined} />
+        {/* DOS win rates, y el de arriba es el que va con el dinero.
+            Antes solo se enseñaba el "por plan", que puntúa TODO lo decidido
+            tenga precio de salida o no, pegado a un P&L que solo suma lo que sí
+            lo tiene: 64% junto a −$12.023 sin forma de reconciliarlos. El de
+            arriba mira exactamente las mismas operaciones que el P&L. */}
+        <Stat
+          label="Win rate · con dinero"
+          value={s?.winRatePricedPct != null ? `${Math.round(s.winRatePricedPct)}%` : "—"}
+          hint={s?.winRatePricedPct != null ? `${s.winsPriced}W · ${s.lossesPriced}L, las que suman al P&L` : undefined}
+        />
+        {s != null && s.unpriced > 0 && (
+          <Stat
+            label="Win rate · por plan"
+            value={s.winRatePct != null ? `${Math.round(s.winRatePct)}%` : "—"}
+            hint={`incluye ${s.unpriced} sin precio de salida`}
+          />
+        )}
         <Stat
           label="Pendientes / Activas"
           value={s ? `${s.pending} / ${s.active}` : "—"}

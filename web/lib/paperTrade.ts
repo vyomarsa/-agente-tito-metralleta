@@ -316,9 +316,29 @@ export function outcomeOf(t: PaperTrade): Outcome {
 
 export interface PaperSummary {
   closedPnl: number; // P&L neto de lo cerrado CON precio
+  /** Aciertos POR PLAN, sobre TODO lo decidido (tenga precio de salida o no). */
   wins: number;
   losses: number;
   winRatePct: number | null;
+  /**
+   * Lo mismo, pero SOLO sobre los cierres con precio — los únicos que suman al
+   * P&L.
+   *
+   * POR QUÉ HAY DOS. `winRatePct` y `closedPnl` se calculaban sobre poblaciones
+   * DISTINTAS y se enseñaban juntos, así que no se podían leer en la misma
+   * frase: el 2026-08-26 la bitácora marcaba **64% de aciertos junto a
+   * −$12.023**, y de los 33 cierres que puntuaban solo 21 tenían dinero medido.
+   * Los otros 12 (11 de ellos apuntados como ACIERTO) entraban en el porcentaje
+   * y no en el dinero. El dueño lo leyó como "los aciertos no vamos bien" sin
+   * poder ver dónde estaba la contradicción.
+   *
+   * El criterio de acierto NO cambia — lo sigue decidiendo el plan (`outcomeOf`),
+   * no el signo del P&L. Lo único que cambia es la población, para que el
+   * porcentaje y el dinero hablen por fin de las mismas operaciones.
+   */
+  winsPriced: number;
+  lossesPriced: number;
+  winRatePricedPct: number | null;
   pending: number;
   active: number;
   openUnrealized: number; // suma del P&L no realizado de los activos
@@ -338,6 +358,8 @@ export function summarize(trades: PaperTrade[]): PaperSummary {
   let openUnrealized = 0;
   let unpriced = 0;
   let priced = 0;
+  let winsPriced = 0;
+  let lossesPriced = 0;
   for (const t of trades) {
     if (isClosed(t)) {
       if (isPriced(t)) {
@@ -351,6 +373,10 @@ export function summarize(trades: PaperTrade[]): PaperSummary {
       const o = outcomeOf(t);
       if (o === "acierto") wins++;
       else if (o === "fallo") losses++;
+      if (isPriced(t)) {
+        if (o === "acierto") winsPriced++;
+        else if (o === "fallo") lossesPriced++;
+      }
     } else if (t.status === "pendiente") {
       pending++;
     } else if (t.status === "activa") {
@@ -359,11 +385,15 @@ export function summarize(trades: PaperTrade[]): PaperSummary {
     }
   }
   const decided = wins + losses;
+  const decidedPriced = winsPriced + lossesPriced;
   return {
     closedPnl,
     wins,
     losses,
     winRatePct: decided > 0 ? (wins / decided) * 100 : null,
+    winsPriced,
+    lossesPriced,
+    winRatePricedPct: decidedPriced > 0 ? (winsPriced / decidedPriced) * 100 : null,
     pending,
     active,
     openUnrealized,
