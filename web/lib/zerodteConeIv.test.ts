@@ -7,7 +7,7 @@
 // donde el precio no llega.
 
 import { describe, it, expect } from "vitest";
-import { coneIv, representativeIv, effectiveHorizon, MIN_HORIZON_DAYS } from "./zerodte";
+import { coneIv, representativeIv, effectiveHorizon, MIN_HORIZON_DAYS, buildZeroDte } from "./zerodte";
 import { expectedMove, probTouch } from "./expectedMove";
 import type { Chain2Contract } from "./optionChain2";
 
@@ -114,5 +114,57 @@ describe("effectiveHorizon", () => {
     const viejo = probTouch(spot, lower1, iv, Math.max(0.0002, 1 / (390 * 24)));
     expect(lower1).toBeGreaterThan(0); // que el nivel exista de verdad
     expect(viejo).toBeLessThan(0.02); // la incoherencia que se arregló
+  });
+});
+
+// ---------------------------------------------------------------------------
+// El motivo del escenario tiene que decir qué mandó DE VERDAD
+// ---------------------------------------------------------------------------
+
+describe("driver de los escenarios bull/bear", () => {
+  /** Cadena mínima con un muro de calls y otro de puts colocados a voluntad. */
+  function analisis(muroCall: number, muroPut: number, spot = 100) {
+    const strikes = [muroPut, spot, muroCall].map((k) => ({
+      strike: k,
+      call: { symbol: `C${k}`, strike: k, type: "call" as const, expiration: "2026-08-26",
+        bid: 1, ask: 1.1, mid: 1.05, lastPrice: 1, delta: 0.5, gamma: 0.05, iv: 0.2,
+        openInterest: k === muroCall ? 9000 : 100, volume: 100, premiumTraded: 0 },
+      put: { symbol: `P${k}`, strike: k, type: "put" as const, expiration: "2026-08-26",
+        bid: 1, ask: 1.1, mid: 1.05, lastPrice: 1, delta: -0.5, gamma: 0.05, iv: 0.2,
+        openInterest: k === muroPut ? 9000 : 100, volume: 100, premiumTraded: 0 },
+    }));
+    const contracts = strikes.flatMap((s) => [s.call, s.put]) as unknown as Chain2Contract[];
+    return buildZeroDte({
+      contracts, spot, closes: cierres(0.005), now: new Date("2026-08-26T15:00:00Z"),
+      horizonDays: 0.2,
+    });
+  }
+
+  it("cuando el muro queda MÁS ALLÁ de 2σ, el motivo dice 2σ y NO 1σ", () => {
+    // Muro a +3% del spot: dentro de la ventana de la vista (±4%) pero muy
+    // fuera de 2σ, que intradía anda por el 0,37%. Manda el clip.
+    const a = analisis(103, 97, 100);
+    expect(a.scenarios.bull.driver).toMatch(/2σ/);
+    expect(a.scenarios.bull.driver).not.toMatch(/1σ/);
+    expect(a.scenarios.bull.driver).toMatch(/se recorta/);
+  });
+
+  it("el motivo del recorte nombra el objetivo natural que se descartó", () => {
+    const a = analisis(103, 97, 100);
+    expect(a.scenarios.bull.driver).toContain("103.00");
+  });
+
+  it("el bajista se comporta igual por su lado", () => {
+    const a = analisis(103, 97, 100);
+    expect(a.scenarios.bear.driver).toMatch(/2σ/);
+    expect(a.scenarios.bear.driver).not.toMatch(/1σ/);
+  });
+
+  it("el objetivo recortado se queda EXACTAMENTE en el borde de 2σ", () => {
+    const a = analisis(103, 97, 100);
+    const sigma = a.spot * (a.expectedRange.sigmaPct / 100);
+    // 2σ en log-espacio, que es como lo construye expectedMove.
+    expect(a.scenarios.bull.target).toBeGreaterThan(a.spot + sigma);
+    expect(a.scenarios.bear.target).toBeLessThan(a.spot - sigma);
   });
 });

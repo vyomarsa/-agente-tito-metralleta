@@ -477,6 +477,48 @@ export function buildZeroDte(input: ZeroDteInput): ZeroDteAnalysis {
     };
   };
 
+  /**
+   * Qué mandó DE VERDAD en el objetivo alcista/bajista.
+   *
+   * El objetivo sale de una carrera entre TRES candidatos —el muro, el imán y el
+   * borde de 1σ— y luego se RECORTA a 2σ. Son cuatro desenlaces posibles, y la
+   * versión anterior solo distinguía dos: si no era exactamente el muro, decía
+   * "Techo/Suelo de 1σ". Eso mentía en los otros dos casos, y el que más se nota
+   * es el recorte: cuando el muro queda más allá de 2σ, la comparación con el
+   * muro falla —porque el clip ya lo movió— y el texto atribuía al 1σ un nivel
+   * que está justo en 2σ. Se veía en pantalla: escenarios a ±0,14% con el 1σ en
+   * ±0,068% y el pie diciendo "1σ".
+   *
+   * El orden de las comprobaciones no es cosmético: el recorte va PRIMERO porque
+   * pisa a quien hubiera ganado la carrera.
+   */
+  const driverFor = (side: "bull" | "bear", raw: number, final: number): string => {
+    const igual = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+    const wall = side === "bull" ? maxCall : maxPut;
+    const limite2 = side === "bull" ? em.upper2 : em.lower2;
+    const borde1 = side === "bull" ? em.upper1 * 0.999 : em.lower1 * 1.001;
+    const palabra = side === "bull" ? "Techo" : "Suelo";
+
+    if (!igual(raw, final) && igual(final, limite2)) {
+      return `${palabra} de 2σ: el objetivo natural ($${raw.toFixed(2)}) queda más lejos de lo que da la volatilidad que resta, así que se recorta aquí`;
+    }
+    if (wall && igual(final, wall.strike)) {
+      return side === "bull"
+        ? `Muro de calls (MAX CALL) en $${wall.strike.toFixed(2)}: resistencia del día`
+        : `Muro de puts (MAX PUT) en $${wall.strike.toFixed(2)}: soporte del día`;
+    }
+    if (magnet != null && igual(final, baseTarget)) {
+      return `Imán del GEX en $${baseTarget.toFixed(2)}: ni el muro ni la volatilidad lo superan`;
+    }
+    if (igual(final, borde1)) {
+      return `${palabra} de 1σ intradía: hasta ahí llega la volatilidad que queda`;
+    }
+    return `${palabra} del rango proyectado para lo que queda de sesión`;
+  };
+
+  const bullFinal = clip(bullTarget);
+  const bearFinal = clip(bearTarget);
+
   const scenarios = {
     base: enrich(
       "base",
@@ -485,24 +527,8 @@ export function buildZeroDte(input: ZeroDteInput): ZeroDteAnalysis {
         ? `Imán del GEX en $${baseTarget.toFixed(2)} — ${regime === "positive" ? "el dealer estabiliza (γ+): tiende a frenar ahí" : "el dealer amplifica (γ−): si llega, acelera"}`
         : "Sin gamma suficiente para fijar un imán; se toma el spot",
     ),
-    // El motivo tiene que decir qué mandó DE VERDAD. El objetivo alcista es el
-    // máximo entre el muro y el techo de 1σ (y el bajista, el mínimo), así que
-    // atribuirlo siempre al muro mentía cuando ganaba la volatilidad: se veía
-    // "muro de puts en $765" con el objetivo puesto en $762.
-    bull: enrich(
-      "bull",
-      clip(bullTarget),
-      maxCall && Math.abs(clip(bullTarget) - maxCall.strike) < 1e-9
-        ? `Muro de calls (MAX CALL) en $${maxCall.strike.toFixed(2)}: resistencia del día`
-        : "Techo de 1σ intradía: hasta ahí llega la volatilidad que queda",
-    ),
-    bear: enrich(
-      "bear",
-      clip(bearTarget),
-      maxPut && Math.abs(clip(bearTarget) - maxPut.strike) < 1e-9
-        ? `Muro de puts (MAX PUT) en $${maxPut.strike.toFixed(2)}: soporte del día`
-        : "Suelo de 1σ intradía: hasta ahí llega la volatilidad que queda",
-    ),
+    bull: enrich("bull", bullFinal, driverFor("bull", bullTarget, bullFinal)),
+    bear: enrich("bear", bearFinal, driverFor("bear", bearTarget, bearFinal)),
   };
 
   return {
