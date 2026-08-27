@@ -62,6 +62,7 @@ function analysis(over: Partial<ZeroDteAnalysis> = {}): ZeroDteAnalysis {
     },
     expectedRange: { low: 98.5, high: 101.5, sigmaPct: 1.5 },
     horizonDays: 0.5,
+    horizonDaysUsed: 0.5,
     ...over,
   };
 }

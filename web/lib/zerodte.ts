@@ -123,8 +123,13 @@ export interface ZeroDteAnalysis {
   scenarios: { bear: ZeroDteScenario; base: ZeroDteScenario; bull: ZeroDteScenario };
   /** Rango esperado de cierre (1σ intradía). */
   expectedRange: { low: number; high: number; sigmaPct: number };
-  /** Días (fracción) usados para el movimiento esperado intradía. */
+  /** Días (fracción) que quedan de verdad. Puede ser ~0 al filo del cierre. */
   horizonDays: number;
+  /**
+   * El horizonte con el que se proyecta = `horizonDays` con el suelo aplicado.
+   * Lo usan el cono, las probabilidades y la gráfica: uno solo para los tres.
+   */
+  horizonDaysUsed: number;
 }
 
 /** Mid de un contrato: mid → (bid+ask)/2 → último. null si no hay nada usable. */
@@ -211,6 +216,28 @@ function legOf(c: Chain2Contract): ZeroDteLeg {
  * quedarse corto en un día de evento cuesta una oportunidad; irse 12× de largo
  * todos los días costaba dinero de verdad, y eso es lo que estaba pasando.
  */
+/**
+ * Suelo del horizonte para TODO lo que proyecta en esta vista.
+ *
+ * A las 15:58 quedan dos minutos y la raíz del tiempo aplasta el cono contra el
+ * precio: sin suelo, la banda de 1σ se vuelve un punto y todas las
+ * probabilidades caen a cero. 0,01 días (14,4 min) es el valor que ya usaba el
+ * cono; lo nuevo es que ahora lo usan TAMBIÉN las probabilidades y la gráfica.
+ *
+ * POR QUÉ IMPORTA QUE SEA UNO SOLO. Había tres números distintos para la misma
+ * sesión: el cono pisaba en 0,01 días, `probTouch` en `1/(390*24)` (9 segundos)
+ * y el cono de la gráfica no pisaba en nada. El resultado se veía en pantalla y
+ * era absurdo: el **suelo de 1σ salía con "0% de tocarlo"**, cuando 1σ es por
+ * definición el nivel que se toca ~32% de las veces. El nivel se calculaba con
+ * un reloj y su probabilidad con otro.
+ */
+export const MIN_HORIZON_DAYS = 0.01;
+
+/** El horizonte que de verdad se usa. Único punto donde se aplica el suelo. */
+export function effectiveHorizon(horizonDays: number): number {
+  return Math.max(horizonDays, MIN_HORIZON_DAYS);
+}
+
 export function coneIv(closes: number[]): number {
   return estimateIV(closes);
 }
@@ -263,7 +290,8 @@ export function buildZeroDte(input: ZeroDteInput): ZeroDteAnalysis {
   const iv = coneIv(closes);
   const chainIv = representativeIv(contracts, closes);
   const ivSource = coneIvSource(closes);
-  const em = expectedMove(spot, iv, Math.max(horizonDays, 0.01));
+  const horizonDaysUsed = effectiveHorizon(horizonDays);
+  const em = expectedMove(spot, iv, horizonDaysUsed);
 
   // ── GEX real por strike (gamma de MarketSnack, sin Black-Scholes) ──
   const gexStrikes = gexByStrike(contracts, spot);
@@ -443,7 +471,7 @@ export function buildZeroDte(input: ZeroDteInput): ZeroDteAnalysis {
       target,
       changePct: pctChange(target),
       driver,
-      touchProb: probTouch(spot, target, iv, Math.max(horizonDays, 1 / (390 * 24))),
+      touchProb: probTouch(spot, target, iv, horizonDaysUsed),
       attractionStrike: at.strike,
       attractionContracts: at.contracts,
     };
@@ -501,6 +529,7 @@ export function buildZeroDte(input: ZeroDteInput): ZeroDteAnalysis {
     scenarios,
     expectedRange: { low: em.lower1, high: em.upper1, sigmaPct: em.sigmaPct },
     horizonDays,
+    horizonDaysUsed,
   };
 }
 

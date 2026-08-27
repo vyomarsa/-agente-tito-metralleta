@@ -7,7 +7,8 @@
 // donde el precio no llega.
 
 import { describe, it, expect } from "vitest";
-import { coneIv, representativeIv } from "./zerodte";
+import { coneIv, representativeIv, effectiveHorizon, MIN_HORIZON_DAYS } from "./zerodte";
+import { expectedMove, probTouch } from "./expectedMove";
 import type { Chain2Contract } from "./optionChain2";
 
 /** Serie de cierres con una volatilidad diaria dada (determinista, sin azar). */
@@ -77,5 +78,41 @@ describe("representativeIv — la IV que cobra la cadena (informativa)", () => {
     const closes = cierres(0.005);
     const cadena = [contrato({ iv: null })];
     expect(representativeIv(cadena, closes)).toBeCloseTo(coneIv(closes), 6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Un solo horizonte para toda la vista
+// ---------------------------------------------------------------------------
+
+describe("effectiveHorizon", () => {
+  it("respeta el horizonte cuando queda sesión de sobra", () => {
+    expect(effectiveHorizon(0.25)).toBe(0.25);
+  });
+
+  it("aplica el suelo al filo del cierre, donde el cono se cerraría a un punto", () => {
+    expect(effectiveHorizon(0.0002)).toBe(MIN_HORIZON_DAYS); // ~17 s restantes
+    expect(effectiveHorizon(0)).toBe(MIN_HORIZON_DAYS);
+  });
+
+  it("el borde de 1σ se toca ~32% con el MISMO horizonte que lo definió", () => {
+    // Es la comprobación que fallaba: el nivel se calculaba con un reloj y su
+    // probabilidad con otro, así que el suelo de 1σ salía con "0% de tocarlo".
+    const spot = 770, iv = 0.129, hd = effectiveHorizon(0.0002);
+    const { upper1, lower1 } = expectedMove(spot, iv, hd);
+
+    for (const nivel of [upper1, lower1]) {
+      const p = probTouch(spot, nivel, iv, hd);
+      expect(p).toBeGreaterThan(0.25);
+      expect(p).toBeLessThan(0.40);
+    }
+  });
+
+  it("con el suelo VIEJO de probTouch (9 s) el mismo nivel daba casi cero", () => {
+    const spot = 770, iv = 0.129;
+    const { lower1 } = expectedMove(spot, iv, effectiveHorizon(0.0002));
+    const viejo = probTouch(spot, lower1, iv, Math.max(0.0002, 1 / (390 * 24)));
+    expect(lower1).toBeGreaterThan(0); // que el nivel exista de verdad
+    expect(viejo).toBeLessThan(0.02); // la incoherencia que se arregló
   });
 });

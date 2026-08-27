@@ -43,8 +43,12 @@ export default function ZeroDteChart({ ticker, a }: { ticker: string; a: ZeroDte
   }, [ticker]);
 
   const cone = useMemo(
-    () => (a.spot > 0 ? conePoints(a.spot, a.iv, a.horizonDays, 16) : []),
-    [a.spot, a.iv, a.horizonDays],
+    // `horizonDaysUsed`, no `horizonDays`: es el MISMO horizonte con el que se
+    // calcularon la banda de 1σ y las probabilidades. Con el crudo, al filo del
+    // cierre el cono se cerraba a un punto mientras la cabecera seguía diciendo
+    // ±0,52 pts — el mismo dibujo contradiciendo a su propio pie.
+    () => (a.spot > 0 ? conePoints(a.spot, a.iv, a.horizonDaysUsed, 16) : []),
+    [a.spot, a.iv, a.horizonDaysUsed],
   );
 
   // Un nivel por concepto. `weight` manda en el encuadre: el objetivo de cierre y
