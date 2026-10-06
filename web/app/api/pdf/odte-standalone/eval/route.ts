@@ -2,8 +2,8 @@
 // barras intradía reales. Mide acierto y sesgo, y guarda ese sesgo para el lazo
 // de auto-corrección. Ver Proceso 0DTE §10.
 
-import { fetchIntradayBarsRange, SchwabError } from "@/lib/pdf/odteStandalone/schwab";
-import { resolveTicker, toSchwabSymbol } from "@/lib/pdf/odteStandalone/zerodte";
+import { fetchIntradayBarsRangeTasty, TastytradeError } from "@/lib/pdf/odteStandalone/tastySource";
+import { resolveTicker } from "@/lib/pdf/odteStandalone/zerodte";
 import {
   loadEvalJournal, reviewForecasts, saveCalibration, type EvalBar,
 } from "@/lib/pdf/odteStandalone/zerodteEval";
@@ -30,8 +30,8 @@ export async function GET(request: Request) {
   }
 
   try {
-    // Barras de ~12 días desde Schwab (Massive da 403 en índices como I:SPX).
-    const tf = await fetchIntradayBarsRange(toSchwabSymbol(ticker), 12);
+    // Barras de ~12 días desde Tastytrade (Massive da 403 en índices como I:SPX).
+    const tf = await fetchIntradayBarsRangeTasty(ticker, 12);
     const bars: EvalBar[] = tf.map((b) => ({
       time: b.time, high: b.high, low: b.low, close: b.close,
     }));
@@ -43,7 +43,7 @@ export async function GET(request: Request) {
     return Response.json({ ticker, ...review });
   } catch (err) {
     const message =
-      err instanceof SchwabError ? err.message : "Error al cargar barras para evaluar.";
+      err instanceof TastytradeError ? err.message : "Error al cargar barras para evaluar.";
     // 200: la evaluación es secundaria, no debe romper la página.
     return Response.json({ ticker, error: message, evals: [] }, { status: 200 });
   }

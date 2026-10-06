@@ -1,9 +1,8 @@
 // GET /api/0dte/sim?ticker=SPX&spot=&regime=&magnet=&flip= — simulador de PAPEL
 // (estrategia pin-al-imán en γ+). NO ejecuta operaciones reales. Ver Proceso 0DTE.
 
-import { fetchIntradayBars } from "@/lib/pdf/odteStandalone/schwab";
+import { fetchIntradayBarsTasty } from "@/lib/pdf/odteStandalone/tastySource";
 import { marketDateStr } from "@/lib/pdf/odteStandalone/occ";
-import { toSchwabSymbol } from "@/lib/pdf/odteStandalone/zerodte";
 import {
   DEFAULT_PARAMS, emptyJournal, evaluateEntry, loadSimJournal, openTodayTrade,
   saveSimJournal, scoreTrade, summarize, type SimBar,
@@ -51,7 +50,7 @@ export async function GET(request: Request) {
     if (pending) {
       const dayClosed = pending.date !== today || (!marketOpen && min >= CLOSE_MIN);
       if (dayClosed) {
-        const tf = await fetchIntradayBars(toSchwabSymbol(ticker));
+        const tf = await fetchIntradayBarsTasty(ticker);
         const bars: SimBar[] = tf.map((b) => ({ time: b.time, high: b.high, low: b.low, close: b.close }));
         const barsDay = bars.length ? marketDateStr(new Date(bars[bars.length - 1].time * 1000)) : "";
         if (barsDay === pending.date) {

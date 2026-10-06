@@ -2,7 +2,7 @@
 // Agente 0DTE — cadena del vencimiento del día, ordenada por volumen.
 // Ver Agente Principal/Proceso 0DTE.md.
 //
-// Reutiliza `parseSchwabChain` (pura) y `toRow` del proyecto; lo único propio
+// La cadena sale de Tastytrade (./tastySource) y pasa por `toRow`; lo único propio
 // es pedir UNA sola fecha de vencimiento y quedarse con los strikes de mayor
 // volumen de cada lado.
 // ============================================================================
@@ -15,13 +15,10 @@ import type { Lang } from "./i18n";
 import { dynamicParams, evaluateEntry, noSetupReason, riskReward, type EntryDecision } from "./zerodteStrategy";
 import { pickTicket, type Ticket, type TicketChainRow } from "./zerodteTicket";
 import { buildStrategySuggestions, type StrategySuggestions } from "./strategySuggestions";
-import { fetchFuturePrice, getAccessToken, parseSchwabChain, SchwabError, type SchwabChainResponse } from "./schwab";
+import { fetchChainTasty, fetchFuturePriceTasty, TastytradeError } from "./tastySource";
 import type { ContractType, Row } from "./types";
 import { loadFlow, overlayRealtime, type FlowAccumulator } from "./zerodteFlow";
 import { isNativeFuture, loadNativeFuture, nativeFresh, rowsFromBuckets } from "./futuresNative";
-
-const API_BASE =
-  process.env.SCHWAB_API_BASE ?? "https://api.schwabapi.com/marketdata/v1";
 
 /** Cuántos strikes se toman de cada lado. */
 export const TOP_N = 15;
@@ -1287,47 +1284,23 @@ export async function fetchZeroDte(
     if (idx) return idx;
   }
 
-  const symbol = toSchwabSymbol(analysis);
-  if (!symbol) throw new SchwabError("Ticker vacío.");
+  if (!analysis.trim()) throw new TastytradeError("Ticker vacío.");
   const today = etDate(now);
   const day = targetDate && /^\d{4}-\d{2}-\d{2}$/.test(targetDate) ? targetDate : today;
   const isToday = day === today;
 
-  const params = new URLSearchParams({
-    symbol,
-    contractType: "ALL",
-    includeUnderlyingQuote: "true",
-    fromDate: day,
-    toDate: day,
-    strikeCount: "500",
-  });
+  // Cadena del vencimiento desde Tastytrade (antes Schwab, 15 min retrasada).
+  const parsed = await fetchChainTasty(analysis, day);
+  const chainRows = parsed.contracts.map(toRow);
 
-  const token = await getAccessToken();
-  const res = await fetch(`${API_BASE}/chains?${params.toString()}`, {
-    headers: { Authorization: `Bearer ${token}` },
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new SchwabError(
-      `Schwab respondió ${res.status} para ${symbol}. ${body.slice(0, 160)}`.trim(),
-      res.status,
-    );
-  }
-
-  const json = (await res.json()) as SchwabChainResponse;
-  const parsed = parseSchwabChain(json, analysis.toUpperCase());
-  const schwabRows = parsed.contracts.map(toRow);
-
-  // Superpone la foto EN TIEMPO REAL de la fuente de datos sobre la cadena de Schwab
-  // (que llega 15 min retrasada). Solo para el vencimiento de hoy — el acumulado
-  // es intradía. Los strikes que la fuente de datos vio quedan frescos; el resto, Schwab.
-  let rows = schwabRows;
+  // Superpone el acumulado del streamer (agresor/flujo) si está corriendo. Solo
+  // para el vencimiento de hoy — el acumulado es intradía.
+  let rows = chainRows;
   let realtimeStrikes = 0;
   let realtimeAgeSec: number | null = null;
   if (isToday) {
     const acc = await loadFlow(analysis, day).catch(() => null);
-    const ov = overlayRealtime(schwabRows, acc);
+    const ov = overlayRealtime(chainRows, acc);
     rows = ov.rows;
     realtimeStrikes = ov.realtimeStrikes;
     if (ov.newestTs > 0) realtimeAgeSec = Math.max(0, Math.round((now.getTime() - ov.newestTs) / 1000));
@@ -1337,7 +1310,7 @@ export async function fetchZeroDte(
 
   // IV at-the-money del día. Si no hay OI junto al dinero se cae a la ventana
   // ancha de `chainIV`, que es peor pero mejor que quedarse sin pronóstico.
-  const spot = parsed.underlyingPrice;
+  const spot = parsed.underlyingPrice ?? spotFromChain(rows);
   const iv = spot != null ? atmIV(rows, spot) ?? chainIV(rows, spot) : null;
   const gex = zeroDteGex(rows, spot ?? 0);
   const flow = dealerFlow(rows, spot ?? 0, iv, hoursToClose(now));
@@ -1347,7 +1320,7 @@ export async function fetchZeroDte(
   // (los niveles se muestran en términos del índice, degradación segura).
   let basis = 0;
   if (future && spot != null) {
-    const futPrice = await fetchFuturePrice(future).catch(() => null);
+    const futPrice = await fetchFuturePriceTasty(future).catch(() => null);
     if (futPrice != null) basis = futPrice - spot;
   }
 
@@ -1362,10 +1335,10 @@ export async function fetchZeroDte(
     ticker: ticker.toUpperCase(),
     expiration: day,
     isToday,
-    spot: parsed.underlyingPrice,
-    delayed: parsed.delayed,
+    spot,
+    delayed: false, // Tastytrade es tiempo real
     contractCount: rows.length,
-    /** Strikes con datos frescos de la fuente de datos (0 = todo Schwab, 15 min). */
+    /** Strikes con datos del streamer de flujo (0 = solo la foto de Tastytrade). */
     realtimeStrikes,
     /** Antigüedad del dato fresco más reciente, en segundos. null si no hubo. */
     realtimeAgeSec,

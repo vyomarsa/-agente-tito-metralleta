@@ -3,7 +3,7 @@
 
 import { asLang } from "@/lib/pdf/odteStandalone/i18n";
 import { isNativeFuture, futureStoreKey } from "@/lib/pdf/odteStandalone/futuresNative";
-import { SchwabError } from "@/lib/pdf/odteStandalone/schwab";
+import { TastytradeError } from "@/lib/pdf/odteStandalone/tastySource";
 import { calibrationShiftPct, fetchZeroDte, resolveTicker } from "@/lib/pdf/odteStandalone/zerodte";
 import {
   loadCalibration, loadLatestClosing, saveClosingPrediction, saveForecast,
@@ -111,7 +111,7 @@ export async function GET(request: Request) {
     return Response.json(result);
   } catch (err) {
     const message =
-      err instanceof SchwabError ? err.message : "Error al cargar la cadena 0DTE.";
+      err instanceof TastytradeError ? err.message : "Error al cargar la cadena 0DTE.";
     return Response.json({ error: message }, { status: 502 });
   }
 }
