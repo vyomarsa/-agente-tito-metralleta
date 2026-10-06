@@ -25,14 +25,8 @@
 //     disco de zerodteFlow.ts (pensado para el polling continuo de 0DTE, no
 //     para 13 tickers a la vez).
 
-import { fetchNearTermChain, fetchBars, MassiveError } from "@/lib/pdf/massive";
-import {
-  fetchAssetPrice,
-  fetchAssetPriceChart,
-  fetchGexStats,
-  fetchContractActivitySummariesGrouped,
-  MarketSnackError,
-} from "@/lib/pdf/marketsnack";
+import { TastytradeError as TitoTastytradeError } from "@/lib/tastytrade";
+import { fetchActivityGroupedTasty, fetchCompanyBase, gexLevels } from "@/lib/pdf/grandesEmpresasTasty";
 import { isMarketOpen, isPreMarket, filterPremarketBars } from "@/lib/pdf/marketHours";
 import { etTimeToUnix, hoursToExpirationClose, marketDateStr } from "@/lib/pdf/occ";
 import { findPivots, clusterPivots } from "@/lib/pdf/levels";
@@ -40,13 +34,11 @@ import { contratosVecinos3Signal, orderBookSentiment, NEIGHBOR_COUNT, type Activ
 import {
   GRANDES_EMPRESAS_TICKERS,
   DEFAULT_GRANDES_EMPRESA,
-  NEAR_TERM_DTE_MAX,
   selectWeeklyExpirations,
 } from "@/lib/pdf/grandesEmpresas";
 import { SP500_TICKERS } from "@/lib/pdf/sp500";
 import { fetchNestedOptionChain, TastytradeError } from "@/lib/pdf/tastytrade";
 import { fetchZeroDteChain } from "@/lib/pdf/tastytradeChain";
-import { fetchTastytradeCandles } from "@/lib/pdf/tastytradeCandles";
 import { atmIV } from "@/lib/pdf/zerodte";
 import { buildSuggestions, type ZeroDteSuggestions } from "@/lib/pdf/zerodteSuggestions";
 import type { TfBar } from "@/lib/pdf/types";
@@ -68,19 +60,16 @@ export async function GET(request: Request) {
     // en paralelo con todo lo demás, no después — es la llamada más pesada
     // de las siete (cientos de strikes/vencimientos) y esperarla en serie
     // duplicaba el tiempo total de la respuesta (~30s medido en vivo).
-    const [chain, msPrice, gexStats, bars15m, dailyBars, todayChart, tastyExpirations, tastyCandles] =
-      await Promise.all([
-        fetchNearTermChain(TICKER, { dteMax: NEAR_TERM_DTE_MAX, now }),
-        fetchAssetPrice(TICKER).catch(() => null),
-        fetchGexStats(TICKER, { period: "1d" }).catch(() => []),
-        fetchBars(TICKER, 15, "minute", 20),
-        fetchBars(TICKER, 1, "day", 5),
-        fetchAssetPriceChart(TICKER).catch(() => []),
-        fetchNestedOptionChain(TICKER).catch(() => []),
-        fetchTastytradeCandles(TICKER),
-      ]);
+    // Todo desde Tastytrade (oct 2026): cadena + velas en una tanda, y la
+    // cadena anidada REST (para las sugerencias) en paralelo.
+    const [base, tastyExpirations] = await Promise.all([
+      fetchCompanyBase(TICKER),
+      fetchNestedOptionChain(TICKER).catch(() => []),
+    ]);
+    const chain = base;
+    const { bars15m, dailyBars, todayBars } = base;
 
-    const spot = msPrice ?? chain.spot ?? dailyBars.at(-1)?.close ?? 0;
+    const spot = base.spot ?? dailyBars.at(-1)?.close ?? 0;
     if (!(spot > 0)) {
       return Response.json({ error: `Sin precio en vivo de ${TICKER} ahora mismo.` }, { status: 502 });
     }
@@ -126,7 +115,13 @@ export async function GET(request: Request) {
       if (cs.length > 0) activityGroups.set(`${s}|call`, cs);
       if (ps.length > 0) activityGroups.set(`${s}|put`, ps);
     }
-    const activityByKey = await fetchContractActivitySummariesGrouped(activityGroups);
+    // Net premium por contrato desde el Time & Sales de Tastytrade. Los grupos se
+    // arman con OCC; aquí se traducen al símbolo del streamer.
+    const streamerOf = new Map(chain.contracts.map((c) => [c.optionTicker, c.streamer]));
+    const streamerGroups = new Map(
+      [...activityGroups].map(([k, occs]) => [k, occs.map((o) => streamerOf.get(o)).filter((x): x is string => !!x)]),
+    );
+    const activityByKey = await fetchActivityGroupedTasty(streamerGroups, base.token, now);
 
     const aboveLevels: ActivityLevel[] = above
       .map((strike): ActivityLevel | null => {
@@ -162,23 +157,7 @@ export async function GET(request: Request) {
     // precio puntual cada 5 min (no rango OHLC), así que se arma como vela
     // sintética open=high=low=close=v — suficiente para pivotes de
     // soporte/resistencia, no para mechas reales.
-    const marketSnackTodayBars: TfBar[] = todayChart.map((p) => {
-      const v = p.v;
-      const time = Math.floor(Date.parse(p.t) / 1000);
-      return { time, open: v, high: v, low: v, close: v };
-    });
-
-    // Respaldo real (2026-08-20, pedido explícito): el feed de
-    // MarketSnack puede quedar atrasado un día entero sin avisar (visto en
-    // vivo con TSLA — 9am ET y su "hoy" seguía sin arrancar). `tastyCandles`
-    // viene de `scripts/tastytrade-candles/candle-streamer.mjs` (proceso de
-    // streaming DXLink aparte, ver ese archivo) — velas de 15 min REALES
-    // (con mechas, no el open=high=low=close sintético de arriba), que se
-    // prefieren siempre que estén al menos tan frescas como MarketSnack.
-    const todayBars: TfBar[] =
-      tastyCandles.length > 0 && (tastyCandles.at(-1)?.time ?? 0) >= (marketSnackTodayBars.at(-1)?.time ?? 0)
-        ? tastyCandles
-        : marketSnackTodayBars;
+    // Velas de 5 min de Tastytrade con pre-market real (OHLC con mechas).
 
     // Fecha de la SESIÓN que se muestra: la del último dato disponible, no
     // necesariamente la fecha calendario de `now` — pedido explícito de
@@ -251,7 +230,9 @@ export async function GET(request: Request) {
           }))
         : [];
 
-    const magnetBucket = gexStats.at(-1) ?? null;
+    // Imán y muros calculados con la gamma y el OI reales de Tastytrade sobre
+    // los mismos vencimientos semanales (antes: GEX pre-calculado de MarketSnack).
+    const magnetLevels = gexLevels(base.tt, TICKER, spot, nearExpirations);
 
     // Gráfica: velas de Massive de los últimos 20 días (pueden no llegar
     // hasta hoy, ver nota de arriba) + las velas sintéticas de HOY de
@@ -299,12 +280,12 @@ export async function GET(request: Request) {
       premarketChangePct,
       isPreMarket: isPreMarket(now),
       marketOpen: isMarketOpen(now),
-      magnet: magnetBucket
+      magnet: magnetLevels
         ? {
-            strike: magnetBucket.magnet,
-            callWall: magnetBucket.call_wall,
-            putWall: magnetBucket.put_wall,
-            gammaFlip: magnetBucket.gamma_flip,
+            strike: magnetLevels.magnet,
+            callWall: magnetLevels.callWall,
+            putWall: magnetLevels.putWall,
+            gammaFlip: magnetLevels.gammaFlip,
           }
         : null,
       expirations: nearExpirations,
@@ -319,7 +300,7 @@ export async function GET(request: Request) {
     });
   } catch (err) {
     const message =
-      err instanceof MassiveError || err instanceof MarketSnackError || err instanceof TastytradeError
+      err instanceof TastytradeError || err instanceof TitoTastytradeError
         ? err.message
         : "Error inesperado analizando la empresa.";
     return Response.json({ error: message }, { status: 502 });

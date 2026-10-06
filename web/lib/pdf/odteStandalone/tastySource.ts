@@ -10,7 +10,7 @@
 // el refresh token de Tastytrade no caduca cada 7 días. Solo servidor.
 // ============================================================================
 
-import { fetchQuoteToken, fetchTastytradeChain, TastytradeError } from "@/lib/tastytrade";
+import { fetchQuoteToken, fetchTastytradeChain, TastytradeError, type TtContract } from "@/lib/tastytrade";
 import { fetchActiveFuture, fetchFuturesQuote } from "@/lib/pdf/tastytrade";
 import type { RawContract } from "./types";
 
@@ -36,7 +36,12 @@ export interface TastyChainResult {
 export async function fetchChainTasty(analysis: string, day: string): Promise<TastyChainResult> {
   const ticker = bare(analysis);
   const { spot, contracts } = await fetchTastytradeChain(ticker, { dates: [day] });
-  const raw: RawContract[] = contracts.map((c) => ({
+  return { contracts: ttToRaw(contracts, ticker, spot), underlyingPrice: spot };
+}
+
+/** TtContract (lib/tastytrade de Tito) → RawContract (formato que consume `toRow`). */
+export function ttToRaw(contracts: TtContract[], ticker: string, spot: number | null): RawContract[] {
+  return contracts.map((c) => ({
     details: {
       contract_type: c.type,
       expiration_date: c.expiration,
@@ -58,7 +63,6 @@ export async function fetchChainTasty(analysis: string, day: string): Promise<Ta
       iv: c.iv,
     },
   }));
-  return { contracts: raw, underlyingPrice: spot };
 }
 
 /** Precio del contrato de futuro ACTIVO ("/ES" → "/ESZ6"). null si no hay quote. */

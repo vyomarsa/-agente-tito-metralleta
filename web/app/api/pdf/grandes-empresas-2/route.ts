@@ -20,13 +20,7 @@
 // superior sigue siendo el en vivo de MarketSnack (para pre-market/order
 // book), pueden no coincidir al centavo.
 
-import { fetchNearTermChain, fetchBars, MassiveError } from "@/lib/pdf/massive";
-import {
-  fetchAssetPrice,
-  fetchAssetPriceChart,
-  fetchContractActivitySummariesGrouped,
-  MarketSnackError,
-} from "@/lib/pdf/marketsnack";
+import { fetchActivityGroupedTasty, fetchCompanyBase } from "@/lib/pdf/grandesEmpresasTasty";
 import { isMarketOpen, isPreMarket, filterPremarketBars } from "@/lib/pdf/marketHours";
 import { etTimeToUnix, marketDateStr } from "@/lib/pdf/occ";
 import { findPivots, clusterPivots } from "@/lib/pdf/levels";
@@ -34,12 +28,10 @@ import { orderBookSentiment, NEIGHBOR_COUNT, type ActivityLevel } from "@/lib/pd
 import {
   GRANDES_EMPRESAS_TICKERS,
   DEFAULT_GRANDES_EMPRESA,
-  NEAR_TERM_DTE_MAX,
   selectWeeklyExpirations,
 } from "@/lib/pdf/grandesEmpresas";
 import { SP500_TICKERS } from "@/lib/pdf/sp500";
-import { fetchTastytradeCandles } from "@/lib/pdf/tastytradeCandles";
-import { fetchCompanyGex, SchwabError } from "@/lib/pdf/grandesEmpresas2Gex";
+import { fetchCompanyGex, TastytradeError } from "@/lib/pdf/grandesEmpresas2Gex";
 import type { TfBar } from "@/lib/pdf/types";
 
 export const runtime = "nodejs";
@@ -56,18 +48,15 @@ export async function GET(request: Request) {
     // `gex` (Schwab) se pide en paralelo con todo lo demás — es la llamada
     // más pesada, esperarla en serie duplicaría el tiempo total (mismo
     // problema ya documentado en la v1 con la cadena de tastytrade).
-    const [chain, msPrice, bars15m, dailyBars, todayChart, tastyCandles, gex] =
-      await Promise.all([
-        fetchNearTermChain(TICKER, { dteMax: NEAR_TERM_DTE_MAX, now }),
-        fetchAssetPrice(TICKER).catch(() => null),
-        fetchBars(TICKER, 15, "minute", 20),
-        fetchBars(TICKER, 1, "day", 5),
-        fetchAssetPriceChart(TICKER).catch(() => []),
-        fetchTastytradeCandles(TICKER),
-        fetchCompanyGex(TICKER, now).catch((err) => ({ error: err instanceof Error ? err.message : String(err) })),
-      ]);
+    // Todo desde Tastytrade (oct 2026): una sola cadena sirve para el order book
+    // y para el GEX (antes: Massive + MarketSnack + Schwab).
+    const base = await fetchCompanyBase(TICKER);
+    const chain = base;
+    const { bars15m, dailyBars, todayBars } = base;
+    const gex = await fetchCompanyGex(TICKER, now, { tt: base.tt, spot: base.spot })
+      .catch((err) => ({ error: err instanceof Error ? err.message : String(err) }));
 
-    const spot = msPrice ?? chain.spot ?? dailyBars.at(-1)?.close ?? 0;
+    const spot = base.spot ?? dailyBars.at(-1)?.close ?? 0;
     if (!(spot > 0)) {
       return Response.json({ error: `Sin precio en vivo de ${TICKER} ahora mismo.` }, { status: 502 });
     }
@@ -105,7 +94,11 @@ export async function GET(request: Request) {
         if (cs.length > 0) activityGroups.set(`${s}|call`, cs);
         if (ps.length > 0) activityGroups.set(`${s}|put`, ps);
       }
-      const activityByKey = await fetchContractActivitySummariesGrouped(activityGroups);
+      const streamerOf = new Map(chain.contracts.map((c) => [c.optionTicker, c.streamer]));
+      const streamerGroups = new Map(
+        [...activityGroups].map(([k, occs]) => [k, occs.map((o) => streamerOf.get(o)).filter((x): x is string => !!x)]),
+      );
+      const activityByKey = await fetchActivityGroupedTasty(streamerGroups, base.token, now);
       aboveLevels = above
         .map((strike): ActivityLevel | null => {
           const activity = activityByKey.get(`${strike}|call`);
@@ -127,15 +120,6 @@ export async function GET(request: Request) {
 
     // Pre-market — % movido y soportes/resistencias de HOY. MISMA lógica que
     // la v1 (ver ese archivo para el porqué de cada fuente de datos).
-    const marketSnackTodayBars: TfBar[] = todayChart.map((p) => {
-      const v = p.v;
-      const time = Math.floor(Date.parse(p.t) / 1000);
-      return { time, open: v, high: v, low: v, close: v };
-    });
-    const todayBars: TfBar[] =
-      tastyCandles.length > 0 && (tastyCandles.at(-1)?.time ?? 0) >= (marketSnackTodayBars.at(-1)?.time ?? 0)
-        ? tastyCandles
-        : marketSnackTodayBars;
 
     const sessionDateStr =
       todayBars.length > 0 ? marketDateStr(new Date(todayBars.at(-1)!.time * 1000)) : marketDateStr(now);
@@ -197,7 +181,7 @@ export async function GET(request: Request) {
     });
   } catch (err) {
     const message =
-      err instanceof MassiveError || err instanceof MarketSnackError || err instanceof SchwabError
+      err instanceof TastytradeError
         ? err.message
         : "Error inesperado analizando la empresa.";
     return Response.json({ error: message }, { status: 502 });

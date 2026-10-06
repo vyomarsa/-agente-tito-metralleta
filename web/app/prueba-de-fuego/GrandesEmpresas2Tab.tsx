@@ -206,7 +206,7 @@ export default function GrandesEmpresas2Tab() {
       <header className="ge-head">
         <div>
           <h1>Grandes empresas 2.0</h1>
-          <p>Igual que "Grandes empresas", pero el imán y la señal salen del GEX real de Schwab — el mismo motor de la pestaña "0DTE".</p>
+          <p>Igual que "Grandes empresas", pero el imán y la señal salen del GEX real de Tastytrade — el mismo motor de la pestaña "0DTE".</p>
         </div>
         <div className="ge-controls">
           {lastUpdated && <span className="ge-updated">actualizado {etTime()} ET</span>}
@@ -262,7 +262,7 @@ export default function GrandesEmpresas2Tab() {
           </div>
           {data.gex && (
             <div className="ge-magnet-box">
-              <span className="ge-magnet-label">🧲 Imán (GEX real de Schwab)</span>
+              <span className="ge-magnet-label">🧲 Imán (GEX real de Tastytrade)</span>
               <span className="ge-magnet-value">{data.gex.gex.kingStrike != null ? `$${dec(data.gex.gex.kingStrike)}` : "—"}</span>
               <span className="ge-magnet-sub">
                 vencimiento {fmtExpiration(data.gex.expiration)}{data.gex.isToday ? " (0DTE)" : ""} · flip {data.gex.gex.flipStrike != null ? `$${dec(data.gex.gex.flipStrike)}` : "—"} · régimen {data.gex.gex.regime === "positive" ? "γ+ (revierte)" : "γ− (amplifica)"}
@@ -294,7 +294,7 @@ export default function GrandesEmpresas2Tab() {
                   <p>
                     {isDefaultTf
                       ? "Franja gris = pre-market (4:00–9:30 ET) · líneas punteadas = puntos de rechazo del pre-market de hoy (se quedan visibles toda la sesión)."
-                      : "Histórico de Massive — puede no incluir la vela de hoy en vivo."}
+                      : "Velas de Tastytrade (1h y 4h: historial desde ~9 meses atrás)."}
                   </p>
                 </div>
                 <div className="ge-tf-picker">
@@ -327,11 +327,11 @@ export default function GrandesEmpresas2Tab() {
       {data?.gex?.suggestions && <SpreadSuggestions s={data.gex.suggestions} />}
 
       <p className="ge-foot">
-        Se actualiza sola cada 60s. El imán/la señal salen del GEX real de Schwab (griegos reales, ~15 min de
-        delay) sobre el vencimiento MÁS PRÓXIMO de la empresa — casi nunca es hoy mismo (las equities no vencen
+        Se actualiza sola cada 60s. El imán/la señal salen del GEX real de Tastytrade (griegos reales, en
+        tiempo real) sobre el vencimiento MÁS PRÓXIMO de la empresa — casi nunca es hoy mismo (las equities no vencen
         a diario como SPX/SPY/QQQ, según el ticker vencen 2-3 veces por semana). El order book y los puntos de
-        rechazo del pre-market siguen siendo el mismo motor de "Contratos vecinos 3.0"/net premium real de
-        MarketSnack que ya usa "Grandes empresas" — no cambiaron. Dinero simulado, no es consejo financiero.
+        rechazo del pre-market siguen siendo el mismo motor de "Contratos vecinos 3.0"/net premium real (Time & Sales
+        de Tastytrade) que ya usa "Grandes empresas". Dinero simulado, no es consejo financiero.
       </p>
     </div>
   );

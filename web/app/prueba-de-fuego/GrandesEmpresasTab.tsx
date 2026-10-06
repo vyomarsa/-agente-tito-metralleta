@@ -199,7 +199,7 @@ export default function GrandesEmpresasTab() {
       <header className="ge-head">
         <div>
           <h1>Grandes empresas</h1>
-          <p>Magnificent Seven + PLTR, IREN, NFLX, SPCX, INTC, ORCL, HOOD — Premium Traded real (MarketSnack) + imán del GEX real.</p>
+          <p>Magnificent Seven + PLTR, IREN, NFLX, SPCX, INTC, ORCL, HOOD — Premium Traded real + imán del GEX real (Tastytrade).</p>
         </div>
         <div className="ge-controls">
           {lastUpdated && <span className="ge-updated">actualizado {etTime()} ET</span>}
@@ -293,7 +293,7 @@ export default function GrandesEmpresasTab() {
                   <p>
                     {isDefaultTf
                       ? "Franja gris = pre-market (4:00–9:30 ET) · líneas punteadas = puntos de rechazo del pre-market de hoy (se quedan visibles toda la sesión)."
-                      : "Histórico de Massive — puede no incluir la vela de hoy en vivo."}
+                      : "Velas de Tastytrade (1h y 4h: historial desde ~9 meses atrás)."}
                   </p>
                 </div>
                 <div className="ge-tf-picker">
@@ -327,7 +327,7 @@ export default function GrandesEmpresasTab() {
         día de la semana que se está operando (nunca cruza a la semana siguiente): lunes combina 0DTE de hoy +
         miércoles + viernes; martes combina miércoles + viernes; miércoles combina 0DTE de hoy + viernes;
         jueves usa solo viernes; viernes usa solo el 0DTE de hoy. El
-imán sale del GEX agregado real de MarketSnack; el call/put y los targets salen del mismo motor de
+imán sale del GEX calculado con la gamma y el OI reales de Tastytrade (vencimientos de la semana); el Premium Traded y el Net Premium salen del Time & Sales de Tastytrade; el call/put y los targets salen del mismo motor de
         "Contratos vecinos 3.0" (Premium Traded acumulado del día confirma dónde está el dinero, Net Premium
         del ÚLTIMO bucket de 5 min — no acumulado — confirma la dirección de AHORA). La dirección se marca
         "✅ confirmado" recién al sostenerse {PERSISTENCE_REQUIRED} lecturas seguidas.

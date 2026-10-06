@@ -17,8 +17,9 @@
 // nada de lib/odteStandalone/ ni de lib/grandesEmpresas.ts.
 
 import { toRow } from "./odteStandalone/compute";
-import { fetchOptionChain, SchwabError } from "./odteStandalone/schwab";
-import { zeroDteGex, buildChainTable, buildTicket, atmIV, toSchwabSymbol, type ZeroDteGex, type ChainLine } from "./odteStandalone/zerodte";
+import { fetchTastytradeChain, TastytradeError, type TtContract } from "@/lib/tastytrade";
+import { ttToRaw } from "./odteStandalone/tastySource";
+import { zeroDteGex, buildChainTable, buildTicket, atmIV, type ZeroDteGex, type ChainLine } from "./odteStandalone/zerodte";
 import { chainIV } from "./odteStandalone/gex";
 import { expectedMove } from "./odteStandalone/expectedMove";
 import { dynamicParams, evaluateEntry, riskReward, noSetupReason, type EntryDecision } from "./odteStandalone/zerodteStrategy";
@@ -27,7 +28,7 @@ import type { Ticket } from "./odteStandalone/zerodteTicket";
 import { marketDateStr } from "./odteStandalone/occ";
 import { hoursToExpirationClose } from "./occ";
 
-export { SchwabError };
+export { TastytradeError };
 
 export interface CompanyGexResult {
   ticker: string;
@@ -49,20 +50,24 @@ export interface CompanyGexResult {
 }
 
 /**
- * GEX real (Schwab) del vencimiento MÁS PRÓXIMO de `ticker` — hoy si lo hay
+ * GEX real (Tastytrade) del vencimiento MÁS PRÓXIMO de `ticker` — hoy si lo hay
  * (raro en equities), si no el siguiente disponible (mañana, o en unos días,
  * según cuándo vencen sus opciones esa semana).
  */
-export async function fetchCompanyGex(ticker: string, now: Date = new Date()): Promise<CompanyGexResult> {
+export async function fetchCompanyGex(
+  ticker: string,
+  now: Date = new Date(),
+  /** Cadena ya bajada (p. ej. por fetchCompanyBase) para no pedirla dos veces. */
+  pre?: { tt: TtContract[]; spot: number | null },
+): Promise<CompanyGexResult> {
   const clean = ticker.trim().toUpperCase();
-  const symbol = toSchwabSymbol(clean);
   const today = marketDateStr(now);
 
-  // Ventana chica: solo hace falta encontrar el PRÓXIMO vencimiento, no la
-  // cadena entera (fetchOptionChain trocea por DTE_WINDOWS de todos modos,
-  // pero maxDte acota cuántas ventanas hace falta pedir).
-  const chainResult = await fetchOptionChain(symbol, { maxDte: 10 });
-  const allRows = chainResult.contracts.map(toRow);
+  // Cadena de Tastytrade (oct 2026, antes Schwab): solo los próximos 10 días,
+  // basta para encontrar el PRÓXIMO vencimiento.
+  const chainResult: { tt: TtContract[]; spot: number | null } = pre ??
+    (await fetchTastytradeChain(clean, { dteMin: 0, dteMax: 10 }).then((r) => ({ tt: r.contracts, spot: r.spot })));
+  const allRows = ttToRaw(chainResult.tt, clean, chainResult.spot).map(toRow);
 
   const expirations = [...new Set(allRows.map((r) => r.expiration))]
     .filter((e) => e >= today)
@@ -72,7 +77,7 @@ export async function fetchCompanyGex(ticker: string, now: Date = new Date()): P
     throw new Error(`Sin vencimientos disponibles de ${clean} en los próximos 10 días.`);
   }
   const rows = allRows.filter((r) => r.expiration === nearestExp);
-  const spot = chainResult.underlyingPrice;
+  const spot = chainResult.spot;
   const isToday = nearestExp === today;
 
   const lines = buildChainTable(rows);
@@ -95,7 +100,7 @@ export async function fetchCompanyGex(ticker: string, now: Date = new Date()): P
     expiration: nearestExp,
     isToday,
     spot,
-    delayed: chainResult.delayed,
+    delayed: false, // Tastytrade es tiempo real
     contractCount: rows.length,
     lines,
     gex,
