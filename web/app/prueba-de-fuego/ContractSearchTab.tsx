@@ -180,7 +180,7 @@ export default function ContractSearchTab() {
       <div className="card" style={{ gap: 8 }}>
         <div style={{ fontWeight: 700, fontSize: 16 }}>Búsqueda de contratos</div>
         <p className="wheel-disclaimer" style={{ fontSize: 13, lineHeight: 1.6 }}>
-          Escanea las empresas del S&amp;P 500 buscando los 10 mejores contratos de acumulación
+          Escanea con Tastytrade las 14 empresas de Grandes empresas + SPY y QQQ buscando los 10 mejores contratos de acumulación
           institucional real: una sola pata (nunca multileg), volumen del día que ya superó el
           Open Interest existente (dinero nuevo repitiéndose, no rotación), comprado
           agresivamente al ask, vencimiento entre 10 y 40 días, y premium mayor a $1,000,000. Cada
