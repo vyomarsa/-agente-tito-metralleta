@@ -277,8 +277,9 @@ async function refreshAccessToken(tokens: StoredTokens): Promise<StoredTokens> {
   return next;
 }
 
-/** Devuelve un access token válido, refrescándolo si le queda menos de 1 min. */
-async function getAccessToken(): Promise<string> {
+/** Devuelve un access token válido, refrescándolo si le queda menos de 1 min.
+ *  Exportado para que la sección Prueba de Fuego (lib/pdf) use la MISMA conexión. */
+export async function getAccessToken(): Promise<string> {
   const tokens = await readTokens();
   if (!tokens) {
     throw new SchwabError("Schwab no está conectado. Autoriza la app en /schwab.", {

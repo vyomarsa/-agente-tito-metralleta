@@ -1,0 +1,1325 @@
+.pdf-root {
+  /* Tema oscuro (ago 2026, pedido explícito: "que todo el
+     proyecto sea oscuro"). MISMOS nombres de variable que el tema claro
+     anterior — todo lo que ya usaba var(--x) se re-tematiza solo. Los
+     colores SEMÁNTICOS (verde/rojo/ámbar/azul de acento) se dejaron
+     IGUALES al tema claro a propósito — son los mismos que ~18-20 archivos
+     .tsx siguen usando hardcodeados en vez de var() (heredado del rebrand
+     oscuro original de jul-2026, que ya los daba por buenos sobre fondo
+     oscuro), así que cambiarlos acá habría creado dos tonos de verde/rojo
+     distintos conviviendo en la misma app. Solo bg/panel/texto/bordes
+     cambian de verdad. */
+  --bg: #05070d;
+  --panel: #131a2b;
+  --panel-2: #0f1522;
+  --border: #263049;
+  --border-soft: #1c2438;
+  --text: #f5f7fb;
+  --muted: #9aa5c0;
+  --faint: #6b7591;
+  --accent: #2f6bff;
+  --accent-dim: rgba(47, 107, 255, 0.22);
+  --green: #12b76a;
+  --green-dark: #0e9f5f;
+  --green-bg: rgba(18, 183, 106, 0.14);
+  --red: #f04438;
+  --red-soft: #f97066;
+  --red-bg: rgba(240, 68, 56, 0.14);
+  --amber: #f79009;
+  --amber-bg: rgba(247, 144, 9, 0.14);
+  --amber-border: rgba(247, 144, 9, 0.4);
+  --amber-text: #fdb022;
+  --call: #12b76a;
+  --put: #f97066;
+
+  /* Escala de espaciado. La regla que arregla el amontonamiento:
+     el gap ENTRE cards (lg) tiene que superar al padding DENTRO (md=24px),
+     si no la proximidad se invierte y las cards se leen pegadas. */
+  --space-xs: 8px;
+  --space-sm: 14px;   /* un control y lo que controla */
+  --space-md: 24px;   /* cards hermanas lado a lado */
+  --space-lg: 32px;   /* secciones distintas */
+}
+
+.pdf-root, .pdf-root * { box-sizing: border-box; }
+
+.pdf-root, .pdf-root {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.pdf-root .wrap {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 28px 32px 96px;
+}
+
+/* Pila principal de la página + agrupador para controles pegados a su contenido. */
+.pdf-root .page-stack { display: flex; flex-direction: column; gap: var(--space-lg); }
+.pdf-root .stack-tight { display: flex; flex-direction: column; gap: var(--space-sm); }
+
+.pdf-root .header h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: -0.2px; }
+.pdf-root .header p { margin: 0 0 24px; color: var(--muted); }
+
+/* ── Header bar (diseño) ─────────────────────────────── */
+.pdf-root .hb {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 0 32px;
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  height: 64px;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+/* El navbar (8 pestañas) es lo único que puede quedarse corto de espacio — todo lo
+   demás (marca, búsqueda, precio, selector de idioma) debe seguir siempre visible,
+   así que el navbar es el que se achica y scrollea internamente en vez de empujar
+   al resto fuera de la pantalla. */
+.pdf-root .hb-brand, .pdf-root .hb-search, .pdf-root .hb-right { flex-shrink: 0; }
+.pdf-root .hb-brand { display: flex; align-items: center; gap: 10px; }
+.pdf-root .hb-brand-link { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; }
+.pdf-root .hb-logo {
+  width: 30px; height: 30px; border-radius: 8px;
+  background: linear-gradient(135deg, #6d8dff, #9b6dff);
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+.pdf-root .hb-logo img { width: 100%; height: 100%; object-fit: contain; }
+.pdf-root .hb-name { font-weight: 700; font-size: 16px; letter-spacing: -0.2px; }
+.pdf-root .hb-chip {
+  font-size: 11px; color: var(--muted); background: var(--border-soft);
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px;
+}
+.pdf-root .hb-tab {
+  font-family: inherit; font-size: 13px; font-weight: 600;
+  padding: 7px 14px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text);
+}
+.pdf-root .hb-tab:hover { background: var(--panel-2); }
+.pdf-root .hb-tab.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.pdf-root .hb-search {
+  font-family: inherit; font-size: 13px; padding: 8px 14px;
+  border-radius: 999px; border: 1px solid var(--border);
+  background: var(--panel-2); color: var(--text); outline: none; width: 190px;
+}
+.pdf-root .hb-search:focus { border-color: var(--accent); background: var(--panel); }
+.pdf-root .hb-right { margin-left: auto; display: flex; align-items: baseline; gap: 10px; }
+.pdf-root .hb-ticker-name { font-size: 13px; color: var(--muted); }
+.pdf-root .hb-price { font-size: 20px; font-weight: 700; }
+.pdf-root .hb-chg { font-size: 13px; font-weight: 600; }
+.pdf-root .hb-link { font-size: 12px; color: var(--accent); text-decoration: none; white-space: nowrap; }
+.pdf-root .hb-link:hover { text-decoration: underline; }
+
+.pdf-root .lang-switch {
+  font-family: inherit; font-size: 13px; font-weight: 600;
+  padding: 7px 30px 7px 14px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23667085' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center;
+  color: var(--text); outline: none; appearance: none; -webkit-appearance: none;
+}
+.pdf-root .lang-switch:hover { background-color: var(--panel-2); }
+.pdf-root .lang-switch:focus { border-color: var(--accent); }
+
+/* ── Navegación entre vistas (Ticker / Ideas / Wheel / Time & Sales) ── */
+.pdf-root .nav-tabs-wrap {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+.pdf-root .nav-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--border-soft);
+  border: 1px solid var(--border);
+  /* Se achica y scrollea internamente antes que empujar el buscador/idioma
+     fuera de la pantalla (ver .hb-brand/.hb-search/.hb-right). */
+  min-width: 0;
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.pdf-root .nav-tabs::-webkit-scrollbar { display: none; }
+.pdf-root .nav-tabs.standalone { display: inline-flex; margin-bottom: 20px; overflow-x: visible; width: auto; }
+/* Aviso visible de que hay más pestañas a la derecha — antes el scroll
+   horizontal era invisible (scrollbar oculta a propósito) y pestañas como
+   "Ajustes" quedaban fuera de la vista sin ninguna pista. */
+.pdf-root .nav-tabs-more {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: -14px 0 14px -6px var(--bg);
+  z-index: 1;
+}
+.pdf-root .nav-tabs-more:hover { background: var(--panel-2); }
+.pdf-root .nav-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 600; line-height: 1;
+  padding: 8px 14px; border-radius: 999px;
+  color: var(--muted); text-decoration: none; white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.pdf-root .nav-tab:hover { background: var(--panel); color: var(--text); }
+.pdf-root .nav-tab.on { background: var(--text); color: var(--bg); }
+.pdf-root .nav-tab.on:hover { background: var(--text); color: var(--bg); }
+.pdf-root .nav-tab-icon { font-size: 12px; }
+
+@media (max-width: 900px) {
+  .pdf-root .nav-tab { padding: 8px 10px; }
+}
+
+/* ── Cards genéricas del diseño ──────────────────────── */
+.pdf-root .card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.pdf-root .card-title { font-size: 15px; font-weight: 600; }
+.pdf-root .card-sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.pdf-root .grid-2 { display: grid; grid-template-columns: 1.25fr 1fr; gap: var(--space-md); }
+@media (max-width: 900px) { .pdf-root .grid-2 { grid-template-columns: 1fr; } }
+
+/* Sentiment */
+.pdf-root .sent-score { font-size: 34px; font-weight: 700; line-height: 1; }
+.pdf-root .sent-label { font-size: 12px; font-weight: 600; }
+.pdf-root .sent-band { display: flex; gap: 4px; height: 10px; }
+.pdf-root .sent-band div { flex: 1; }
+.pdf-root .sent-marker {
+  position: absolute; top: 0; transform: translateX(-50%);
+  width: 0; height: 0;
+  border-left: 6px solid transparent; border-right: 6px solid transparent;
+  border-top: 8px solid var(--text);
+}
+.pdf-root .sent-part { display: grid; grid-template-columns: 170px 1fr 42px; gap: 14px; align-items: center; }
+.pdf-root .sent-part-name { font-size: 13px; font-weight: 600; }
+.pdf-root .sent-part-note { font-size: 11px; color: var(--faint); }
+.pdf-root .sent-track { height: 8px; background: var(--border-soft); border-radius: 999px; overflow: hidden; }
+.pdf-root .sent-fill { height: 100%; border-radius: 999px; }
+.pdf-root .sent-part-score { font-size: 13px; font-weight: 700; text-align: right; }
+.pdf-root .sent-head-label { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0.4px; text-transform: uppercase; }
+
+/* Prediction */
+.pdf-root .pred-circle {
+  width: 54px; height: 54px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; font-size: 26px;
+}
+.pdf-root .pred-target { font-size: 30px; font-weight: 700; }
+.pdf-root .pred-note { border-radius: 10px; padding: 12px 14px; font-size: 13px; line-height: 1.45; color: var(--text); }
+
+/* Activity bars */
+.pdf-root .act-bars { display: flex; align-items: flex-end; height: 170px; border-bottom: 1px solid var(--border); }
+.pdf-root .act-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+.pdf-root .act-pair { display: flex; align-items: flex-end; gap: 5px; height: 100%; }
+.pdf-root .act-bar { width: 16px; border-radius: 4px 4px 0 0; }
+.pdf-root .act-days { display: flex; }
+.pdf-root .act-day { flex: 1; text-align: center; font-size: 11px; color: var(--muted); }
+.pdf-root .act-stats { display: flex; gap: 24px; border-top: 1px solid var(--border-soft); padding-top: 14px; flex-wrap: wrap; }
+.pdf-root .act-stat-label { font-size: 11px; color: var(--muted); }
+.pdf-root .act-stat-value { font-size: 18px; font-weight: 700; }
+.pdf-root .legend-dot { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
+
+/* Money flow */
+.pdf-root .mf-bar { display: flex; height: 14px; border-radius: 999px; overflow: hidden; gap: 2px; }
+.pdf-root .mf-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pdf-root .mf-tile { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 10px; padding: 12px; }
+.pdf-root .mf-tile-label { font-size: 11px; color: var(--muted); }
+.pdf-root .mf-tile-value { font-size: 17px; font-weight: 700; margin-top: 2px; }
+.pdf-root .mf-tile-sub { font-size: 11px; color: var(--faint); margin-top: 2px; }
+
+/* PRO dark card */
+.pdf-root .pro-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.pdf-root .pro-title { font-size: 15px; font-weight: 600; color: var(--text); }
+.pdf-root .pro-badge {
+  font-size: 10px; font-weight: 700; letter-spacing: 1px; padding: 3px 10px;
+  border-radius: 999px; background: linear-gradient(135deg, #f5c542, #e8940a); color: #0b0f1a;
+}
+.pdf-root .pro-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.pdf-root .pro-legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.pdf-root .pro-chart { position: relative; border-radius: 10px; background: var(--panel-2); overflow: hidden;
+  height: clamp(340px, 46vh, 520px); }
+.pdf-root .pro-note { font-size: 12px; color: var(--muted); }
+
+/* Régimen GEX */
+.pdf-root .pro-regime { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pdf-root .pro-regime-pill {
+  font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 999px;
+  border: 1px solid transparent;
+}
+.pdf-root .pro-regime-pill.pos { background: rgba(47,181,106,0.14); color: var(--green-dark); border-color: rgba(47,181,106,0.35); }
+.pdf-root .pro-regime-pill.neg { background: rgba(229,72,77,0.14); color: var(--red); border-color: rgba(229,72,77,0.35); }
+.pdf-root .pro-regime-meta { font-size: 12px; color: var(--muted); }
+.pdf-root .pro-regime-meta b { color: var(--text); }
+.pdf-root .pro-warn {
+  font-size: 12px; color: var(--amber-text); background: rgba(232,148,10,0.12);
+  border: 1px solid rgba(232,148,10,0.35); border-radius: 8px; padding: 8px 12px;
+}
+
+/* Nodos de concentración GEX (overlay sobre las velas) */
+.pdf-root .node-layer { position: absolute; inset: 0; pointer-events: none; }
+.pdf-root .node-wrap {
+  position: absolute; right: 74px; transform: translateY(-50%);
+  display: flex; align-items: center; gap: 8px; justify-content: flex-end;
+}
+.pdf-root .node-label {
+  font-size: 11px; color: var(--text); white-space: nowrap; text-align: right;
+  background: rgba(255,255,255,0.85); padding: 1px 6px; border-radius: 5px;
+}
+.pdf-root .node-flow { color: var(--muted); }
+.pdf-root .node {
+  border-radius: 50%; flex: none; pointer-events: auto;
+  display: flex; align-items: center; justify-content: center;
+  transition: top 0.15s ease;
+}
+.pdf-root .node-king { animation: nodePulse 2.4s ease-in-out infinite; }
+.pdf-root .node-king-tag { font-size: 11px; }
+@keyframes nodePulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.12); } }
+
+/* Burbuja de trade repetitivo */
+.pdf-root .repeat-badge {
+  display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.2px;
+  background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(163,177,255,0.35); vertical-align: middle;
+}
+
+/* Feed */
+.pdf-root .feed-tabs { display: flex; align-items: center; gap: 8px; }
+.pdf-root .feed-row {
+  display: grid; gap: 12px; align-items: center;
+  background: var(--panel-2); border: 1px solid var(--border-soft);
+  border-radius: 10px; padding: 12px;
+}
+.pdf-root .feed-row:hover { background: var(--accent-dim); }
+.pdf-root .feed-head {
+  display: grid; gap: 12px;
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.4px; padding: 0 12px;
+}
+.pdf-root .feed-empty { padding: 28px; text-align: center; color: var(--muted); font-size: 13px; background: var(--panel-2); border-radius: 10px; }
+.pdf-root .disclaimer { font-size: 11px; color: var(--faint); text-align: center; margin-top: -12px; }
+
+/* Detalle de sub-agentes (colapsable) */
+.pdf-root .detalle { border-top: 1px dashed var(--border); padding-top: 8px; }
+.pdf-root .detalle > summary {
+  cursor: pointer; font-size: 14px; font-weight: 600; color: var(--muted);
+  padding: 12px 0; list-style: none;
+}
+.pdf-root .detalle > summary::before { content: "▸ "; }
+.pdf-root .detalle[open] > summary::before { content: "▾ "; }
+.pdf-root .detalle-inner { display: flex; flex-direction: column; gap: 28px; padding-top: var(--space-sm); }
+
+/* ── Buscador clásico (/flow) ────────────────────────── */
+.pdf-root .searchbar { display: flex; gap: 10px; margin-bottom: 24px; }
+.pdf-root .searchbar input {
+  flex: 1; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; color: var(--text);
+  padding: 12px 14px; font-size: 16px; text-transform: uppercase; letter-spacing: 1px; outline: none;
+}
+.pdf-root .searchbar input:focus { border-color: var(--accent); }
+.pdf-root .searchbar button {
+  background: var(--accent); color: #ffffff; border: none; border-radius: 10px;
+  padding: 0 22px; font-size: 15px; font-weight: 600; cursor: pointer;
+}
+.pdf-root .searchbar button:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Pasos de carga ──────────────────────────────────── */
+.pdf-root .steps {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 16px 18px; margin-bottom: 20px;
+}
+.pdf-root .step { display: flex; align-items: baseline; gap: 10px; padding: 5px 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pdf-root .step.done { color: var(--text); }
+.pdf-root .step .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-dim); flex: 0 0 auto; transform: translateY(-1px); }
+.pdf-root .step.active .dot { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+.pdf-root .step.done .dot { background: var(--green); }
+.pdf-root .step .detail { color: var(--muted); margin-left: auto; font-size: 12px; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+.pdf-root .error {
+  background: var(--red-bg); border: 1px solid rgba(240,68,56,0.35); color: var(--red);
+  border-radius: 12px; padding: 14px 16px; margin-bottom: 20px;
+}
+
+.pdf-root .meta { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 14px; color: var(--muted); }
+.pdf-root .meta b { color: var(--text); font-variant-numeric: tabular-nums; }
+.pdf-root .warn { color: var(--amber-text); }
+
+/* ── Tablas ──────────────────────────────────────────── */
+.pdf-root .tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+.pdf-root .tablewrap.tall { max-height: 560px; overflow-y: auto; }
+.pdf-root table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+.pdf-root th, .pdf-root td { padding: 9px 12px; text-align: right; white-space: nowrap; }
+.pdf-root th.left, .pdf-root td.left, .pdf-root th:first-child, .pdf-root td:first-child { text-align: left; }
+.pdf-root thead th {
+  position: sticky; top: 0;
+  background: var(--panel-2); color: var(--muted);
+  font-weight: 600; cursor: pointer; user-select: none;
+  border-bottom: 1px solid var(--border);
+}
+.pdf-root thead th:hover { color: var(--text); }
+.pdf-root tbody tr:nth-child(odd) { background: var(--panel-2); }
+.pdf-root tbody tr:hover { background: var(--accent-dim); }
+.pdf-root tbody tr.unusual td { background: var(--amber-bg) !important; }
+.pdf-root tbody tr.unusual:hover td { background: var(--amber-border) !important; }
+.pdf-root tbody tr.expired-row td { opacity: 0.55; }
+.pdf-root tbody tr.expired-row:hover td { opacity: 0.85; }
+.pdf-root .sp-wide { color: var(--amber-text); font-weight: 600; }
+.pdf-root tfoot .totals td {
+  position: sticky; bottom: 0; background: var(--panel-2);
+  border-top: 2px solid var(--border); font-weight: 700; color: var(--text);
+}
+
+.pdf-root .pill {
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.pdf-root .pill.call, .pdf-root .pill.agg-ask { background: var(--green-bg); color: var(--green-dark); }
+.pdf-root .pill.put, .pdf-root .pill.agg-bid { background: var(--red-bg); color: var(--red); }
+.pdf-root .pill.agg-mid, .pdf-root .pill.agg-unknown { background: var(--border-soft); color: var(--muted); }
+.pdf-root .pill.st-vigente { background: var(--green-bg); color: var(--green-dark); }
+.pdf-root .pill.st-expira_hoy { background: var(--amber-bg); color: var(--amber-text); }
+.pdf-root .pill.st-expirado { background: var(--border-soft); color: var(--faint); }
+.pdf-root .pill.st-desconocido { background: var(--border-soft); color: var(--muted); }
+
+.pdf-root .muted { color: var(--muted); }
+.pdf-root .na { color: var(--faint); }
+.pdf-root .pxsrc { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+.pdf-root .chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.pdf-root .chip { display: inline-block; padding: 1px 6px; border-radius: 5px; font-size: 10px; font-weight: 700; letter-spacing: 0.3px; }
+.pdf-root .chip-hot { background: var(--amber-bg); color: var(--amber-text); }
+.pdf-root .chip-ask { background: var(--green-bg); color: var(--green-dark); }
+.pdf-root .chip-bid { background: var(--red-bg); color: var(--red); }
+.pdf-root .chip-neutral { background: var(--accent-dim); color: var(--accent); }
+
+.pdf-root .leg-single { color: var(--green-dark); font-size: 11px; font-weight: 600; }
+.pdf-root .leg-multi { color: var(--amber-text); font-size: 11px; font-weight: 600; }
+.pdf-root .mv-ok { color: var(--green-dark); font-weight: 600; }
+.pdf-root .mv-bad { color: var(--red); font-weight: 600; }
+.pdf-root .cv-confirm { color: var(--green-dark); font-weight: 600; }
+
+/* ── Company header (detalle) ────────────────────────── */
+.pdf-root .company { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; }
+.pdf-root .company-head { display: flex; align-items: center; gap: 16px; }
+.pdf-root .logo { width: 48px; height: 48px; object-fit: contain; background: var(--panel); border: 1px solid var(--border-soft); border-radius: 10px; padding: 6px; flex: 0 0 auto; }
+.pdf-root .company-id { flex: 1 1 auto; min-width: 0; }
+.pdf-root .company-name { font-size: 20px; font-weight: 700; display: flex; align-items: baseline; gap: 10px; }
+.pdf-root .company-name .tick { font-size: 12px; font-weight: 600; color: var(--muted); background: var(--border-soft); padding: 2px 8px; border-radius: 6px; letter-spacing: 0.5px; }
+.pdf-root .company-sub { color: var(--muted); margin-top: 2px; font-size: 13px; }
+.pdf-root .company-price { text-align: right; flex: 0 0 auto; }
+.pdf-root .pxbig { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.pdf-root .chg { font-size: 13px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.pdf-root .chg.up { color: var(--green-dark); }
+.pdf-root .chg.down { color: var(--red); }
+.pdf-root .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-top: 18px; }
+.pdf-root .stat { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 10px; padding: 10px 12px; }
+.pdf-root .stat-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+.pdf-root .stat-value { font-size: 16px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.pdf-root .stat-sub { font-size: 11px; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.pdf-root .company-desc { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 16px 0 0; }
+
+/* ── Scorecard panel ─────────────────────────────────── */
+.pdf-root .scpanel { background: var(--panel); border: 2px solid var(--accent-dim); border-radius: 16px; padding: 18px 20px; }
+.pdf-root .scpanel-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px; }
+.pdf-root .scpanel-head h2 { margin: 0; font-size: 16px; }
+.pdf-root .scpanel-total { font-size: 14px; color: var(--muted); }
+.pdf-root .scpanel-total b { color: var(--text); font-size: 20px; }
+.pdf-root .scgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 10px; }
+.pdf-root .sccat { border-radius: 10px; padding: 10px 12px; border: 1px solid var(--border); }
+.pdf-root .sccat.on { background: var(--green-bg); border-color: rgba(18,183,106,0.35); }
+.pdf-root .sccat.off { background: var(--panel-2); }
+.pdf-root .sccat-name { font-size: 13px; font-weight: 600; }
+.pdf-root .sccat-w { font-size: 11px; color: var(--muted); font-weight: 400; }
+.pdf-root .sccat-q { font-size: 11px; color: var(--muted); margin: 3px 0 8px; min-height: 28px; }
+.pdf-root .sccat-score { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.pdf-root .sccat.on .sccat-score { color: var(--green-dark); }
+.pdf-root .sccat-score.pending { color: var(--faint); font-weight: 600; font-size: 18px; }
+.pdf-root .sccat-den { font-size: 12px; color: var(--muted); font-weight: 500; }
+.pdf-root .sccat-pts { display: block; font-size: 11px; color: var(--muted); font-weight: 500; margin-top: 2px; }
+
+/* ── Category cards (Agresividad, etc.) ──────────────── */
+.pdf-root .scorecard {
+  display: flex; gap: 24px; align-items: stretch;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 16px; padding: 20px 22px;
+}
+.pdf-root .score-main {
+  text-align: center; padding-right: 24px; border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; justify-content: center; min-width: 170px;
+}
+.pdf-root .score-cat { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+.pdf-root .score-num { font-size: 56px; font-weight: 800; line-height: 1.05; font-variant-numeric: tabular-nums; }
+.pdf-root .score-num.up { color: var(--green); }
+.pdf-root .score-num.down { color: var(--red); }
+.pdf-root .score-num.neutral { color: var(--amber); }
+.pdf-root .score-den { font-size: 22px; color: var(--muted); font-weight: 600; }
+.pdf-root .score-q { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.pdf-root .score-detail { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 10px; }
+.pdf-root .score-verdict { font-size: 18px; font-weight: 700; }
+.pdf-root .score-verdict.up { color: var(--green-dark); }
+.pdf-root .score-verdict.down { color: var(--red); }
+.pdf-root .score-verdict.neutral { color: var(--amber); }
+.pdf-root .split-bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--border-soft); }
+.pdf-root .split-ask { background: var(--green); }
+.pdf-root .split-bid { background: var(--red-soft); }
+.pdf-root .split-legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.pdf-root .split-legend .dot-ask, .pdf-root .split-legend .dot-bid, .pdf-root .dot-ask, .pdf-root .dot-bid { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
+.pdf-root .dot-ask { background: var(--green); }
+.pdf-root .dot-bid { background: var(--red-soft); }
+
+.pdf-root .cv-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.pdf-root .cv-metric { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 10px; padding: 8px 11px; }
+.pdf-root .cv-metric-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+.pdf-root .cv-metric-value { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.pdf-root .cv-metric-pts { font-size: 13px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+.pdf-root .cv-metric-hint { font-size: 11px; margin-top: 2px; }
+.pdf-root .cv-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--border-soft); margin-top: 4px; }
+.pdf-root .cv-bar-seg { height: 100%; }
+.pdf-root .cv-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.pdf-root .cv-legend b { color: var(--text); }
+.pdf-root .cv-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+
+.pdf-root .cv-alert { background: var(--amber-bg); border: 1px solid var(--amber-border); border-radius: 10px; padding: 11px 14px; color: var(--amber-text); }
+.pdf-root .cv-alert-head { font-size: 14px; font-weight: 600; }
+.pdf-root .cv-alert-sub { font-weight: 400; font-size: 12px; opacity: 0.85; }
+.pdf-root .cv-alert-list { margin-top: 8px; color: var(--text); font-variant-numeric: tabular-nums; }
+.pdf-root .cv-alert-item { padding: 6px 0; border-top: 1px solid var(--amber-border); }
+.pdf-root .cv-alert-item:first-child { border-top: none; padding-top: 2px; }
+.pdf-root .cv-alert-row1 { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.pdf-root .cv-alert-contract { font-size: 15px; }
+.pdf-root .cv-alert-money { font-size: 15px; font-weight: 700; color: var(--amber-text); }
+.pdf-root .cv-alert-row2 { font-size: 13px; color: var(--muted); margin-top: 3px; }
+.pdf-root .cv-alert-row2 b { color: var(--text); }
+
+/* ── Flow chart + racimos ────────────────────────────── */
+.pdf-root .chart, .pdf-root .chart-loading {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 16px; padding: 18px 20px;
+}
+.pdf-root .chart-loading { color: var(--muted); }
+.pdf-root .chart-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; justify-content: space-between; }
+.pdf-root .chart-head h2 { margin: 0; font-size: 16px; }
+.pdf-root .chart-sub { font-size: 12px; margin: 6px 0 12px; }
+.pdf-root .tf-toggle { display: inline-flex; gap: 4px; }
+.pdf-root .tf-btn {
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  border-radius: 999px; padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer;
+  font-family: inherit;
+}
+.pdf-root .tf-btn:hover { background: var(--panel-2); }
+.pdf-root .tf-btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.pdf-root .chart-canvas { width: 100%; height: 380px; }
+.pdf-root .chart-canvas.tall { height: 440px; }
+.pdf-root .pane-price { width: 100%; height: 300px; }
+.pdf-root .pane-hist { width: 100%; height: 170px; border-top: 1px solid var(--border); }
+.pdf-root .chart-empty { color: var(--muted); padding: 30px 0; text-align: center; }
+.pdf-root .flowchart-wrap { position: relative; }
+.pdf-root .flow-legend {
+  position: absolute; top: 8px; left: 8px; z-index: 25; pointer-events: none;
+  background: rgba(10,14,23,0.92); border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 10px; font-size: 11px; max-width: 460px; color: var(--text);
+  box-shadow: 0 8px 24px rgba(16,24,40,0.10);
+}
+.pdf-root .flow-legend .ft-time { color: var(--muted); font-size: 11px; margin-bottom: 3px; }
+.pdf-root .flow-legend .ft-row { padding: 1px 0; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pdf-root .flow-legend .ft-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
+.pdf-root .flow-legend .ft-side { font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.pdf-root .flow-legend .ft-more { color: var(--muted); font-size: 10px; margin-top: 2px; }
+
+.pdf-root .clusters { margin-top: 18px; }
+.pdf-root .clusters-title { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+.pdf-root .clusters-title .muted { font-weight: 400; font-size: 12px; }
+
+.pdf-root .struct-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px; }
+.pdf-root .struct-sub { font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+
+/* ChartPanel (Top-5 notional) legend */
+.pdf-root .legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; margin-top: 16px; }
+.pdf-root .legend-item { display: flex; gap: 10px; align-items: flex-start; }
+.pdf-root .legend-swatch { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto; margin-top: 3px; }
+.pdf-root .legend-body { min-width: 0; }
+.pdf-root .legend-title { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.pdf-root .legend-meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.pdf-root .legend-meta b { color: var(--text); }
+
+/* Noticias y catalizadores (Tarea 7 — RSS macro + noticias de la empresa) */
+.pdf-root .news-flag { border-radius: 10px; padding: 12px 14px; border: 1px solid; }
+.pdf-root .news-flag.conflict { background: var(--amber-bg); border-color: var(--amber-border); }
+.pdf-root .news-flag.confirm { background: var(--green-bg); border-color: rgba(18,183,106,0.35); }
+.pdf-root .news-flag-title { font-size: 13px; font-weight: 700; }
+.pdf-root .news-flag.conflict .news-flag-title { color: var(--amber-text); }
+.pdf-root .news-flag.confirm .news-flag-title { color: var(--green-dark); }
+.pdf-root .news-flag-detail { font-size: 12px; color: var(--text); margin-top: 4px; line-height: 1.5; }
+.pdf-root .news-flag-foot { font-size: 11px; color: var(--muted); margin-top: 6px; }
+
+.pdf-root .news-head { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 8px; }
+.pdf-root .news-head-note { font-weight: 400; text-transform: none; letter-spacing: 0; }
+.pdf-root .news-list { display: flex; flex-direction: column; gap: 6px; }
+
+.pdf-root .news-item { display: block; padding: 10px 12px; border-radius: 10px; background: var(--panel-2);
+  border: 1px solid var(--border-soft); text-decoration: none; color: inherit; transition: background .12s, border-color .12s; }
+.pdf-root .news-item:hover { background: var(--panel-2); border-color: var(--border); }
+.pdf-root .news-item-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+.pdf-root .news-sent { font-size: 9px; font-weight: 700; letter-spacing: .04em; padding: 2px 6px; border-radius: 4px; }
+.pdf-root .news-sent.positive { background: var(--green-bg); color: var(--green-dark); }
+.pdf-root .news-sent.negative { background: var(--red-bg); color: var(--red); }
+.pdf-root .news-sent.neutral { background: var(--panel-2); color: var(--muted); }
+.pdf-root .news-sent.match { background: var(--accent-dim); color: var(--accent); }
+.pdf-root .news-meta { font-size: 11px; color: var(--muted); }
+.pdf-root .news-title { font-size: 13px; font-weight: 600; line-height: 1.4; }
+.pdf-root .news-why { font-size: 11px; color: var(--muted); margin-top: 4px; line-height: 1.5;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* Contexto IV (sub-agente 5) */
+.pdf-root .iv-note { font-size: 12px; color: var(--text); line-height: 1.55; margin-top: 12px;
+  background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 8px; padding: 10px 12px; }
+.pdf-root .iv-special { font-size: 12px; line-height: 1.55; margin-top: 8px; padding: 10px 12px;
+  background: var(--amber-bg); border: 1px solid var(--amber-border); border-radius: 8px; color: var(--amber-text); }
+.pdf-root .iv-source { font-size: 11px; line-height: 1.5; margin-top: 8px; }
+.pdf-root .iv-bar { height: 6px; background: var(--border-soft); border-radius: 3px; overflow: hidden; min-width: 70px; }
+.pdf-root .iv-bar > div { height: 100%; border-radius: 3px; }
+
+/* Validación de Flows (sub-agente 6) */
+.pdf-root .val-dirs { display: flex; gap: 20px; flex-wrap: wrap; margin-top: 12px; }
+.pdf-root .val-dir { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.pdf-root .val-dir b { font-size: 15px; }
+.pdf-root .val-dir .muted { font-size: 11px; }
+.pdf-root .val-tag { font-size: 10px; font-weight: 700; padding: 3px 7px; border-radius: 5px; white-space: nowrap; }
+.pdf-root .val-tag.ok { background: var(--green-bg); color: var(--green-dark); }
+.pdf-root .val-tag.bad { background: var(--red-bg); color: var(--red); }
+.pdf-root .val-tag.pending { background: var(--panel-2); color: var(--muted); }
+
+/* Heatmap de niveles + cono de desviación estándar (ProWallsCard) */
+.pdf-root .wall-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px; margin-top: 14px; }
+.pdf-root .wall-stat { background: rgba(16,24,40,.03); border: 1px solid rgba(16,24,40,.08);
+  border-radius: 10px; padding: 10px 12px; }
+.pdf-root .wall-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.pdf-root .wall-stat-value { font-size: 20px; font-weight: 700; color: var(--text); margin-top: 3px;
+  font-variant-numeric: tabular-nums; }
+.pdf-root .wall-stat-sub { font-size: 11px; color: var(--faint); margin-top: 2px; }
+
+/* GEX Heatmap por strike × vencimiento */
+.pdf-root .heat-scroll { overflow: auto; margin-top: 14px; max-height: 520px; position: relative; }
+.pdf-root .heat-grid { display: grid; gap: 1px; min-width: 620px; font-variant-numeric: tabular-nums; }
+.pdf-root .heat-corner, .pdf-root .heat-colhead { font-size: 10px; color: var(--muted); padding: 6px 8px; text-align: center;
+  position: sticky; top: 0; background: var(--panel-2); z-index: 2; }
+.pdf-root .heat-corner { text-align: left; }
+.pdf-root .heat-dte { color: var(--faint); font-size: 9px; }
+.pdf-root .heat-rowhead { font-size: 11px; color: var(--muted); padding: 0 8px; display: flex; align-items: center;
+  justify-content: space-between; gap: 6px; background: var(--panel-2); position: sticky; left: 0; z-index: 1; }
+.pdf-root .heat-rowhead.spot { color: var(--text); background: var(--accent-dim); font-weight: 700; border-radius: 3px; }
+.pdf-root .heat-dist { font-size: 9px; opacity: .6; }
+.pdf-root .heat-cell { min-height: 22px; display: flex; align-items: center; justify-content: center;
+  font-size: 9.5px; color: var(--text); border-radius: 2px; cursor: default; }
+.pdf-root .heat-cell.empty { background: rgba(16,24,40,.03); }
+.pdf-root .heat-cell.total { background: rgba(16,24,40,.06); font-weight: 700; font-size: 10px; }
+.pdf-root .heat-foot { display: flex; justify-content: space-between; align-items: center; gap: 16px;
+  flex-wrap: wrap; margin-top: 12px; font-size: 12px; color: var(--muted); }
+.pdf-root .heat-hover { font-size: 11px; color: var(--text); background: rgba(16,24,40,.05);
+  border: 1px solid rgba(16,24,40,.12); border-radius: 8px; padding: 6px 10px; }
+
+/* Prediction Pro — escenarios bear/base/bull */
+.pdf-root .hz-tabs { display: flex; gap: 4px; background: var(--border-soft); border-radius: 8px; padding: 3px; }
+.pdf-root .hz-tab { border: 0; background: transparent; font: inherit; font-size: 12px; font-weight: 600;
+  color: var(--muted); padding: 5px 11px; border-radius: 6px; cursor: pointer; }
+.pdf-root .hz-tab.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 3px rgba(16,24,40,.10); }
+
+.pdf-root .sc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.pdf-root .sc-box { border: 1px solid; border-radius: 10px; padding: 12px; }
+.pdf-root .sc-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.pdf-root .sc-target { font-size: 22px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.pdf-root .sc-chg { font-size: 13px; font-weight: 600; }
+.pdf-root .sc-prob { margin-top: 8px; font-size: 10px; color: var(--muted); }
+.pdf-root .sc-prob-bar { height: 4px; background: rgba(16,24,40,.09); border-radius: 2px; overflow: hidden; margin-bottom: 3px; }
+.pdf-root .sc-prob-bar > div { height: 100%; border-radius: 2px; }
+.pdf-root .sc-driver { font-size: 10.5px; color: var(--muted); margin-top: 6px; line-height: 1.45; }
+
+.pdf-root .pred-summary { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 10px; padding: 12px; }
+.pdf-root .pred-summary-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+  flex-wrap: wrap; font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--muted); margin-bottom: 6px; }
+.pdf-root .pred-conf { font-weight: 400; text-transform: none; letter-spacing: 0; }
+.pdf-root .pred-summary p { font-size: 13px; line-height: 1.6; margin: 0; }
+.pdf-root .pred-caveat { margin-top: 8px; font-size: 11.5px; color: var(--amber-text); background: var(--amber-bg);
+  border: 1px solid var(--amber-border); border-radius: 7px; padding: 7px 9px; }
+
+.pdf-root .tf-list { display: flex; flex-direction: column; gap: 6px; }
+.pdf-root .tf-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 9px;
+  background: var(--panel-2); border: 1px solid var(--border-soft); }
+.pdf-root .tf-body { flex: 1; min-width: 0; }
+.pdf-root .tf-title { font-size: 12.5px; font-weight: 600; }
+.pdf-root .tf-sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
+.pdf-root .tf-prem { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 640px) { .pdf-root .sc-grid { grid-template-columns: 1fr; } }
+
+/* Soportes y resistencias */
+.pdf-root .lvl-key { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pdf-root .lvl-key-box { border: 1px solid; border-radius: 10px; padding: 10px 12px; }
+.pdf-root .lvl-key-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.pdf-root .lvl-key-price { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.pdf-root .lvl-key-sub { font-size: 11px; color: var(--muted); }
+
+.pdf-root .lvl-list { display: flex; flex-direction: column; gap: 5px; }
+.pdf-root .lvl-row { display: grid; grid-template-columns: 118px 1fr 96px; gap: 12px; align-items: center;
+  padding: 8px 10px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border-soft); }
+.pdf-root .lvl-price { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.pdf-root .lvl-dist { font-size: 10px; color: var(--muted); font-weight: 400; margin-left: 5px; }
+.pdf-root .lvl-mid { min-width: 0; }
+.pdf-root .lvl-bar { height: 5px; background: rgba(16,24,40,.08); border-radius: 3px; overflow: hidden; }
+.pdf-root .lvl-bar > div { height: 100%; border-radius: 3px; }
+.pdf-root .lvl-why { font-size: 10.5px; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+.pdf-root .lvl-strength { text-align: right; display: flex; flex-direction: column; align-items: flex-end; }
+.pdf-root .lvl-strength b { font-size: 15px; font-variant-numeric: tabular-nums; }
+.pdf-root .lvl-strength span { font-size: 10px; color: var(--muted); }
+.pdf-root .lvl-flip { background: var(--panel-2); color: var(--muted); border-radius: 4px; padding: 1px 5px;
+  font-size: 9px; font-weight: 700; margin-top: 2px; }
+.pdf-root .lvl-spot { text-align: center; font-size: 12px; color: var(--muted); padding: 4px 0;
+  border-top: 1px dashed var(--border); border-bottom: 1px dashed var(--border); }
+.pdf-root .lvl-spot b { color: var(--text); font-size: 14px; }
+
+@media (max-width: 640px) { .pdf-root .lvl-key { grid-template-columns: 1fr; } }
+
+/* ============ Vista Estudiante ============ */
+
+/* Toggle Estudiante / Pro */
+.pdf-root .view-toggle { display: inline-flex; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px; gap: 2px; }
+.pdf-root .view-toggle button { border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  font: inherit; font-weight: 600; font-size: 13px; padding: 7px 18px; border-radius: 999px;
+  transition: background .15s, color .15s; }
+.pdf-root .view-toggle button.active { background: var(--accent); color: #fff;
+  box-shadow: 0 1px 3px rgba(47,107,255,0.35); }
+.pdf-root .view-toggle button:not(.active):hover { color: var(--text); }
+.pdf-root .view-toggle-row { display: flex; justify-content: center; }
+
+/* Veredicto */
+.pdf-root .verdict { display: flex; gap: 18px; align-items: center; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 16px; padding: 22px 26px;
+  border-left: 6px solid var(--border); }
+.pdf-root .verdict-up { border-left-color: var(--green); background: linear-gradient(90deg, var(--green-bg), var(--panel) 55%); }
+.pdf-root .verdict-down { border-left-color: var(--red); background: linear-gradient(90deg, var(--red-bg), var(--panel) 55%); }
+.pdf-root .verdict-flat { border-left-color: var(--amber); background: linear-gradient(90deg, var(--amber-bg), var(--panel) 55%); }
+.pdf-root .verdict-warn { border-left-color: var(--red); background: var(--red-bg); }
+.pdf-root .verdict-icon { font-size: 40px; line-height: 1; }
+.pdf-root .verdict-body { flex: 1; }
+.pdf-root .verdict-word { font-size: 24px; font-weight: 800; letter-spacing: -0.01em; }
+.pdf-root .verdict-target { color: var(--accent); }
+.pdf-root .verdict-chg { font-size: 16px; font-weight: 700; margin-left: 8px; color: var(--muted); }
+.pdf-root .verdict-line { margin-top: 6px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pdf-root .verdict-conf { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+  padding: 3px 10px; border-radius: 999px; }
+.pdf-root .verdict-conf.alta { background: var(--green-bg); color: var(--green-dark); }
+.pdf-root .verdict-conf.media { background: var(--amber-bg); color: var(--amber-text); }
+.pdf-root .verdict-conf.baja { background: var(--red-bg); color: var(--red); }
+.pdf-root .verdict-horizon { font-size: 12px; color: var(--muted); }
+.pdf-root .verdict-sub { margin-top: 10px; font-size: 13.5px; color: var(--text); line-height: 1.5; }
+.pdf-root .verdict-loading, .pdf-root .verdict-word + .verdict-sub { color: var(--muted); }
+.pdf-root .verdict-loading { color: var(--muted); font-size: 14px; }
+
+/* Lista de niveles */
+.pdf-root .niveles { margin-top: 14px; }
+.pdf-root .niveles-head, .pdf-root .niveles-row { display: grid; grid-template-columns: 1fr 1.3fr 0.9fr 1.4fr;
+  align-items: center; gap: 10px; }
+.pdf-root .niveles-head { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint);
+  padding: 0 4px 8px; border-bottom: 1px solid var(--border); }
+.pdf-root .niveles-row { padding: 11px 4px; border-bottom: 1px solid var(--border-soft); }
+.pdf-root .niveles-price { font-weight: 700; font-size: 15px; }
+.pdf-root .niveles-tag { font-size: 13px; font-weight: 600; }
+.pdf-root .niveles-tag.sup { color: var(--green-dark); }
+.pdf-root .niveles-tag.res { color: var(--red); }
+.pdf-root .niveles-flip { color: var(--muted); }
+.pdf-root .niveles-dist { font-size: 13px; color: var(--muted); }
+.pdf-root .niveles-prob { position: relative; display: flex; align-items: center; height: 22px;
+  background: var(--panel-2); border-radius: 6px; overflow: hidden; }
+.pdf-root .niveles-bar { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent-dim); }
+.pdf-root .niveles-pct { position: relative; padding-left: 8px; font-size: 12px; font-weight: 700; color: var(--text); }
+
+/* Contexto en una línea */
+.pdf-root .ctx-line { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 12px;
+  border: 1px solid var(--border); background: var(--panel); font-size: 13.5px; }
+.pdf-root .ctx-up { border-left: 4px solid var(--green); }
+.pdf-root .ctx-down { border-left: 4px solid var(--red); }
+.pdf-root .ctx-flat { border-left: 4px solid var(--faint); }
+.pdf-root .ctx-loading { color: var(--muted); }
+.pdf-root .ctx-icon { font-size: 16px; }
+.pdf-root .ctx-text { color: var(--text); }
+.pdf-root .ctx-flag { margin-left: auto; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px; }
+.pdf-root .ctx-flag.up { background: var(--green-bg); color: var(--green-dark); }
+.pdf-root .ctx-flag.down { background: var(--red-bg); color: var(--red); }
+
+/* Chart simple */
+.pdf-root .simple-chart-area { position: relative; height: clamp(300px, 40vh, 420px); margin-top: 14px; border-radius: 12px;
+  background: var(--panel-2); overflow: hidden; }
+.pdf-root .simple-chart-loading { padding: 20px; color: var(--muted); font-size: 13px; }
+.pdf-root .simple-chart-foot { margin-top: 10px; font-size: 11px; color: var(--faint); text-align: center; }
+
+/* Escenarios (3 targets) */
+.pdf-root .esc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 14px; }
+.pdf-root .esc-card { border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: var(--panel-2);
+  border-top: 3px solid var(--border); }
+.pdf-root .esc-card.bull { border-top-color: var(--green); }
+.pdf-root .esc-card.base { border-top-color: var(--accent); background: var(--accent-dim); }
+.pdf-root .esc-card.bear { border-top-color: var(--red); }
+.pdf-root .esc-head { font-size: 12px; font-weight: 700; color: var(--muted); }
+.pdf-root .esc-card.base .esc-head { color: var(--accent); }
+.pdf-root .esc-target { font-size: 22px; font-weight: 800; margin-top: 6px; }
+.pdf-root .esc-chg { font-size: 13px; font-weight: 700; color: var(--muted); }
+.pdf-root .esc-prob { font-size: 12px; color: var(--text); margin-top: 6px; font-weight: 600; }
+.pdf-root .esc-driver { font-size: 11.5px; color: var(--muted); margin-top: 6px; line-height: 1.4; }
+@media (max-width: 640px) { .pdf-root .esc-grid { grid-template-columns: 1fr; } }
+
+/* Memoria del agente */
+.pdf-root .mem-empty { margin-top: 12px; padding: 16px; background: var(--panel-2); border: 1px dashed var(--border);
+  border-radius: 12px; font-size: 13px; color: var(--muted); line-height: 1.5; }
+.pdf-root .mem-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 14px; }
+.pdf-root .mem-stat { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+.pdf-root .mem-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); }
+.pdf-root .mem-stat-value { font-size: 22px; font-weight: 800; margin-top: 3px; }
+.pdf-root .mem-stat-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.pdf-root .mem-table { margin-top: 16px; }
+.pdf-root .mem-head, .pdf-root .mem-row { display: grid; grid-template-columns: 0.8fr 1fr 1fr 0.8fr 1.1fr; gap: 8px; align-items: center; }
+.pdf-root .mem-head { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint);
+  padding: 0 4px 8px; border-bottom: 1px solid var(--border); }
+.pdf-root .mem-row { padding: 10px 4px; border-bottom: 1px solid var(--border-soft); font-size: 13px; }
+.pdf-root .mem-date { color: var(--muted); }
+.pdf-root .mem-pred { font-weight: 700; }
+.pdf-root .mem-actual { font-weight: 600; }
+.pdf-root .mem-pending { font-size: 11px; color: var(--faint); font-weight: 400; }
+.pdf-root .mem-err { font-weight: 700; }
+.pdf-root .mem-err.good { color: var(--green-dark); }
+.pdf-root .mem-err.mid { color: var(--amber-text); }
+.pdf-root .mem-err.bad { color: var(--red); }
+.pdf-root .mem-best { font-size: 12px; color: var(--muted); }
+
+/* ============================================================
+   PriceChart — gráfica propia en SVG (Estudiante + Pro)
+   Sustituye a lightweight-charts en las vistas de predicción:
+   un solo sistema de coordenadas, gutter derecho para los chips.
+   ============================================================ */
+.pdf-root .pc-host { position: relative; width: 100%; overflow: hidden; touch-action: pan-y; }
+.pdf-root .pc-svg { display: block; overflow: visible; }
+
+.pdf-root .pc-axis-y { font-size: 10px; font-weight: 600; letter-spacing: .01em; opacity: .85; }
+.pdf-root .pc-now { font-size: 9px; letter-spacing: .12em; font-weight: 700; }
+
+.pdf-root .pc-series { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.pdf-root .pc-series.pc-anim { stroke-dasharray: 1; stroke-dashoffset: 1; }
+.pdf-root .pc-series.pc-anim.drawn { stroke-dashoffset: 0; transition: stroke-dashoffset 1.2s ease-out; }
+
+.pdf-root .pc-guide { fill: none; stroke-width: 1; stroke-dasharray: 2 3; opacity: .8; }
+
+.pdf-root .pc-wave-line { fill: none; stroke-width: 1.5; stroke-dasharray: 4 3; opacity: .75; }
+.pdf-root .pc-wave-dot { stroke-width: 1.5; }
+.pdf-root .pc-wave-label { font-size: 10.5px; font-weight: 800; letter-spacing: .01em; }
+
+.pdf-root .pc-chip { position: absolute; transform: translateY(-50%); display: flex; align-items: baseline;
+  gap: 5px; padding: 3px 9px; border-radius: 999px; border: 1px solid transparent;
+  font-size: 11px; font-weight: 700; color: #fff; white-space: nowrap; overflow: hidden;
+  pointer-events: none; box-shadow: 0 1px 3px rgba(16,24,40,0.18); }
+.pdf-root .pc-chip.pc-anim-chip { opacity: 0; transition: opacity .4s ease-out .7s; }
+.pdf-root .pc-chip.pc-anim-chip.show { opacity: 1; }
+.pdf-root .pc-chip-label { font-weight: 600; opacity: .82; }
+.pdf-root .pc-chip-price { font-weight: 800; }
+.pdf-root .pc-chip-sub { font-weight: 700; opacity: .82; font-size: 10px; }
+.pdf-root .pc-chip.pc-chip-spot { background: transparent; border-style: dashed; box-shadow: none;
+  border-color: currentColor; }
+.pdf-root .pc-chip.pc-chip-spot .pc-chip-price { font-weight: 700; }
+
+.pdf-root .pc-axis-x { position: absolute; left: 0; right: 0; height: 14px; pointer-events: none; }
+.pdf-root .pc-axis-x span { position: absolute; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.pdf-root .pc-light .pc-axis-x span { color: #98a2b3; }
+.pdf-root .pc-dark .pc-axis-x span { color: #5c6a85; }
+
+.pdf-root .pc-cross-v { position: absolute; width: 1px; pointer-events: none;
+  background: repeating-linear-gradient(180deg, currentColor 0 3px, transparent 3px 6px); }
+.pdf-root .pc-cross-dot { position: absolute; width: 7px; height: 7px; border-radius: 50%;
+  transform: translate(-50%, -50%); pointer-events: none; background: currentColor; opacity: .55; }
+.pdf-root .pc-light .pc-cross-v, .pdf-root .pc-light .pc-cross-dot { color: rgba(16,24,40,0.4); }
+.pdf-root .pc-dark .pc-cross-v, .pdf-root .pc-dark .pc-cross-dot { color: rgba(255,255,255,0.45); }
+
+.pdf-root .pc-tip { position: absolute; pointer-events: none; z-index: 3; min-width: 104px;
+  padding: 7px 10px; border-radius: 9px; font-size: 11px; line-height: 1.35;
+  box-shadow: 0 6px 18px rgba(16,24,40,0.16); }
+.pdf-root .pc-light .pc-tip { background: var(--panel); border: 1px solid var(--border); color: var(--text); }
+.pdf-root .pc-dark .pc-tip { background: #0d1220; border: 1px solid rgba(255,255,255,0.14); color: #e8edf7; }
+.pdf-root .pc-tip-head { font-size: 10px; font-weight: 700; letter-spacing: .04em; opacity: .6;
+  margin-bottom: 4px; text-transform: uppercase; }
+.pdf-root .pc-tip-grid { display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; }
+.pdf-root .pc-tip-grid span { opacity: .55; font-weight: 600; }
+.pdf-root .pc-tip-grid b { font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
+.pdf-root .pc-tip-price { font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; }
+
+/* Loader de análisis — 4 fases claras (no la lista cruda de ~100 pasos) */
+.pdf-root .loader { padding: 26px 30px; }
+@keyframes loader-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* Stepper de 4 fases */
+.pdf-root .loader-steps { display: flex; align-items: flex-start; }
+.pdf-root .loader-node { flex: 1; display: flex; flex-direction: column; align-items: center;
+  text-align: center; gap: 9px; position: relative; }
+.pdf-root .loader-node::before { content: ""; position: absolute; top: 14px; left: -50%; width: 100%;
+  height: 2px; background: var(--border); z-index: 0; transition: background .4s ease; }
+.pdf-root .loader-node:first-child::before { display: none; }
+.pdf-root .loader-node.done::before, .pdf-root .loader-node.active::before { background: var(--accent); }
+.pdf-root .loader-num { position: relative; z-index: 1; width: 30px; height: 30px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 12px; font-weight: 700; background: var(--panel);
+  border: 2px solid var(--border); color: var(--faint); transition: all .3s ease; }
+.pdf-root .loader-node.done .loader-num { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pdf-root .loader-node.active .loader-num { border-color: var(--accent); color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-dim); animation: loader-pulse 1.4s ease-in-out infinite; }
+@keyframes loader-pulse { 0%,100% { box-shadow: 0 0 0 4px var(--accent-dim); } 50% { box-shadow: 0 0 0 7px var(--accent-dim); } }
+.pdf-root .loader-node-label { font-size: 11.5px; color: var(--muted); max-width: 130px; line-height: 1.35; }
+.pdf-root .loader-node.active .loader-node-label { color: var(--text); font-weight: 600; }
+.pdf-root .loader-node.done .loader-node-label { color: var(--text); }
+
+/* Barra de progreso suave */
+.pdf-root .loader-progress { display: flex; align-items: center; gap: 12px; margin-top: 24px; }
+.pdf-root .loader-track { flex: 1; height: 8px; border-radius: 999px; background: var(--panel-2); overflow: hidden; }
+.pdf-root .loader-fill { height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+  transition: width .6s cubic-bezier(.22,.61,.36,1); }
+.pdf-root .loader-pct { font-size: 12px; font-weight: 700; color: var(--muted); min-width: 34px; text-align: right; }
+.pdf-root .loader-current { margin-top: 12px; font-size: 12.5px; color: var(--muted); text-align: center;
+  animation: loader-fade .35s ease-out; }
+
+/* En móvil el aire de sección se recorta: ahí el scroll pesa más que el agrupamiento. */
+@media (max-width: 640px) {
+  .pdf-root { --space-lg: 22px; --space-md: 16px; }
+  .pdf-root .wrap { padding: 20px 16px 72px; }
+  .pdf-root .card { padding: 18px; }
+}
+
+/* Chip de auto-corrección por memoria en el veredicto */
+.pdf-root .verdict-cal { font-size: 11px; font-weight: 700; color: var(--accent);
+  background: var(--accent-dim); padding: 3px 9px; border-radius: 999px; cursor: help; }
+
+/* ============ Ideas del mercado (/ideas) ============ */
+
+.pdf-root .ideas-page { min-height: 100vh; }
+.pdf-root .ideas-body { max-width: 1400px; margin: 0 auto; padding: var(--space-lg) var(--space-md);
+  display: flex; flex-direction: column; gap: var(--space-lg); }
+
+/* Perfil de riesgo */
+.pdf-root .risk-card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+  padding: var(--space-md); display: flex; flex-direction: column; gap: var(--space-sm); }
+.pdf-root .risk-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.pdf-root .risk-head h2 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+.pdf-root .risk-head .muted { font-size: 12px; }
+.pdf-root .risk-controls { display: flex; gap: var(--space-md); align-items: flex-end; flex-wrap: wrap; }
+.pdf-root .risk-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+.pdf-root .risk-field.grow { flex: 1; min-width: 260px; }
+.pdf-root .risk-field strong { color: var(--accent); font-size: 15px; }
+.pdf-root .risk-input { font: inherit; font-size: 20px; font-weight: 700; color: var(--text);
+  border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; width: 170px;
+  background: var(--panel-2); }
+.pdf-root .risk-input:focus { outline: 2px solid var(--accent-dim); border-color: var(--accent); }
+.pdf-root .risk-slider { width: 100%; accent-color: var(--accent); cursor: pointer; background: transparent; }
+.pdf-root .risk-slider::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: var(--border-soft); }
+.pdf-root .risk-slider::-moz-range-track { height: 6px; border-radius: 3px; background: var(--border-soft); }
+.pdf-root .risk-scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--faint); }
+.pdf-root .risk-budgets { display: flex; gap: var(--space-md); flex-wrap: wrap;
+  border-top: 1px solid var(--border-soft); padding-top: var(--space-sm); }
+.pdf-root .risk-budgets > div { display: flex; flex-direction: column; gap: 2px; }
+.pdf-root .risk-budgets span { font-size: 12px; }
+.pdf-root .risk-budgets strong { font-size: 19px; font-variant-numeric: tabular-nums; }
+.pdf-root .risk-note { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.55; }
+
+/* Controles */
+.pdf-root .ideas-controls { display: flex; gap: var(--space-sm); align-items: center; flex-wrap: wrap; }
+.pdf-root .horizon-toggle { display: inline-flex; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px; gap: 2px; }
+.pdf-root .horizon-toggle button { border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  font: inherit; font-weight: 600; font-size: 13px; padding: 7px 16px; border-radius: 999px; }
+.pdf-root .horizon-toggle button.active { background: var(--text); color: #fff; }
+.pdf-root .rescan { margin-left: auto; border: 1px solid var(--border); background: var(--panel);
+  color: var(--text); font: inherit; font-weight: 600; font-size: 13px; padding: 8px 16px;
+  border-radius: 10px; cursor: pointer; }
+.pdf-root .rescan:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.pdf-root .rescan:disabled { opacity: .55; cursor: default; }
+
+/* Resumen */
+.pdf-root .ideas-summary h1 { margin: 0 0 4px; font-size: 24px; font-weight: 800; letter-spacing: -0.02em; }
+.pdf-root .ideas-summary p { margin: 0; font-size: 13px; }
+
+/* Tarjetas (Estudiante) */
+.pdf-root .ideas-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: var(--space-md); }
+.pdf-root .idea-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  padding: 18px 20px; display: flex; flex-direction: column; gap: 10px;
+  border-left: 5px solid var(--green); }
+.pdf-root .idea-card.is-blocked { border-left-color: var(--border); opacity: .72; }
+.pdf-root .idea-card header { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.pdf-root .idea-ticker { font-weight: 800; font-size: 17px; color: var(--text); text-decoration: none; }
+.pdf-root .idea-ticker:hover { color: var(--accent); }
+.pdf-root .idea-contract { font-weight: 700; font-size: 15px; color: var(--accent); }
+.pdf-root .idea-card header .muted { font-size: 12px; }
+.pdf-root .idea-verdict { margin: 0; font-size: 15px; line-height: 1.5; }
+.pdf-root .idea-sub { margin: 0; font-size: 12.5px; line-height: 1.55; }
+.pdf-root .idea-blocked { margin: 0; font-size: 13.5px; color: var(--muted); line-height: 1.5; }
+.pdf-root .idea-foot { display: flex; gap: 7px; flex-wrap: wrap; font-size: 11.5px;
+  border-top: 1px solid var(--border-soft); padding-top: 9px; }
+
+/* Tabla (Pro) */
+.pdf-root .ideas-table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--panel); }
+.pdf-root .ideas-table th, .pdf-root .ideas-table td { padding: 9px 11px; text-align: left; white-space: nowrap;
+  border-bottom: 1px solid var(--border-soft); }
+.pdf-root .ideas-table th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--muted); font-weight: 700; background: var(--panel-2); position: sticky; top: 0; }
+.pdf-root .ideas-table td.num, .pdf-root .ideas-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pdf-root .ideas-table td.strong { font-weight: 800; font-size: 15px; }
+.pdf-root .ideas-table tr:hover td { background: var(--panel-2); }
+.pdf-root .ideas-table tr.row-blocked td { opacity: .5; }
+
+.pdf-root .chip-prima { background: var(--accent-dim); color: var(--accent); }
+.pdf-root .chip-theta { background: var(--amber-bg); color: var(--amber-text); }
+.pdf-root .chip-blocked { background: var(--red-bg); color: var(--red); }
+
+.pdf-root .hist { font-weight: 700; font-variant-numeric: tabular-nums; }
+.pdf-root .hist.up { color: var(--green-dark); }
+.pdf-root .hist.neutral { color: var(--amber-text); }
+.pdf-root .hist.down { color: var(--red); }
+.pdf-root .hist .muted { font-weight: 400; }
+
+.pdf-root .empty-note { padding: var(--space-lg); text-align: center; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 14px; line-height: 1.6; }
+.pdf-root .error-box { background: var(--red-bg); border: 1px solid var(--red-soft); border-radius: 14px;
+  padding: var(--space-md); }
+.pdf-root .error-box p { margin: 6px 0 0; font-size: 13px; line-height: 1.55; }
+.pdf-root .error-box code { background: var(--border-soft); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+.pdf-root .disclaimer { font-size: 12px; line-height: 1.6; max-width: 900px; }
+
+.pdf-root .filter-note { margin-top: 4px !important; font-size: 12.5px; }
+.pdf-root .filter-note strong { color: var(--text); }
+
+.pdf-root .watchlist-card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+  padding: var(--space-md); display: flex; flex-direction: column; gap: var(--space-sm); }
+.pdf-root .watchlist-broker { display: flex; gap: var(--space-md); align-items: flex-end; flex-wrap: wrap; }
+.pdf-root .broker-select { font: inherit; font-size: 14px; font-weight: 600; color: var(--text);
+  border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; background: var(--panel-2); }
+.pdf-root .broker-caveat { margin: 0; font-size: 12px; color: var(--amber-text); background: var(--amber-bg);
+  border: 1px solid var(--amber-border); border-radius: 8px; padding: 7px 11px; line-height: 1.5; flex: 1; min-width: 280px; }
+.pdf-root .sync-pending { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 11px 14px; font-size: 13px; }
+.pdf-root .sync-pending code { background: var(--accent-dim); color: var(--accent); padding: 2px 7px;
+  border-radius: 5px; font-weight: 700; }
+.pdf-root .sync-pending p { margin: 6px 0 0; font-size: 12px; line-height: 1.5; }
+/* Aparcados por el drenador: piden acción tuya, así que no se camuflan con los pendientes. */
+.pdf-root .sync-failed { background: var(--red-bg); border-color: rgba(240,68,56,0.35); }
+.pdf-root .sync-failed code { background: var(--red-bg); color: var(--red); }
+
+/* Conectar el broker por MCP: el OAuth ocurre en Claude, aquí solo se entrega el comando. */
+.pdf-root .connect-btn { font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+  color: var(--text); background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 8px 13px; }
+.pdf-root .connect-btn:hover { border-color: var(--accent); color: var(--accent); }
+.pdf-root .connect-panel { background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 13px 15px; font-size: 13px; display: flex;
+  flex-direction: column; gap: 8px; }
+.pdf-root .connect-panel p { margin: 0; font-size: 12px; line-height: 1.6; }
+.pdf-root .connect-cmd { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.pdf-root .connect-cmd code { font-size: 11.5px; word-break: break-all; flex: 1; min-width: 240px; }
+.pdf-root .copy-btn { font: inherit; font-size: 11.5px; font-weight: 700; cursor: pointer;
+  color: var(--accent); background: var(--accent-dim); border: 0; border-radius: 6px;
+  padding: 5px 10px; white-space: nowrap; }
+.pdf-root .copy-btn:hover { filter: brightness(0.95); }
+.pdf-root .broker-link { font-size: 12px; font-weight: 700; color: var(--accent); text-decoration: none;
+  white-space: nowrap; }
+.pdf-root .broker-link:hover { text-decoration: underline; }
+.pdf-root .watchlist-note { font-size: 11.5px; line-height: 1.6; margin: 0; }
+
+.pdf-root .star { border: 0; background: transparent; cursor: pointer; font-size: 19px; line-height: 1;
+  color: var(--faint); padding: 0 2px; margin-left: auto; }
+.pdf-root .star:hover { color: var(--amber); }
+.pdf-root .star.on { color: var(--amber); }
+.pdf-root .unstar { border: 0; background: transparent; cursor: pointer; color: var(--faint); font-size: 13px; }
+.pdf-root .unstar:hover { color: var(--red); }
+
+/* ── Módulo Wheel ────────────────────────────────────── */
+.pdf-root .wheel-preset-head h2 { margin: 0 0 4px; font-size: 18px; }
+.pdf-root .wheel-preset-head p { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+.pdf-root .wheel-preset-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.pdf-root .wheel-preset-tab {
+  font-family: inherit; font-size: 13px; font-weight: 600;
+  padding: 8px 16px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text);
+}
+.pdf-root .wheel-preset-tab.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.pdf-root .wheel-preset-explain { margin: 0 0 12px; font-size: 14px; }
+.pdf-root .wheel-preset-facts { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); }
+.pdf-root .wheel-preset-facts b { color: var(--text); }
+
+.pdf-root .wheel-list { display: flex; flex-direction: column; gap: 10px; }
+.pdf-root .wheel-row { padding: 16px 20px; }
+.pdf-root .wheel-row.unafford { opacity: 0.72; }
+.pdf-root .wheel-row.blocked { border-color: rgba(240,68,56,0.35); background: var(--red-bg); }
+.pdf-root .wheel-row-head {
+  width: 100%; display: flex; justify-content: space-between; align-items: center;
+  font-family: inherit; font-size: 15px; background: none; border: none;
+  cursor: pointer; text-align: left; padding: 0; color: var(--text);
+}
+.pdf-root .wheel-score { font-weight: 700; font-size: 20px; }
+.pdf-root .wheel-score small { font-size: 12px; color: var(--muted); font-weight: 500; }
+.pdf-root .wheel-plain { margin: 10px 0 0; font-size: 14px; line-height: 1.5; }
+.pdf-root .wheel-grid { display: flex; flex-wrap: wrap; gap: 6px 20px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.pdf-root .wheel-grid b { color: var(--text); }
+.pdf-root .wheel-tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+.pdf-root .wheel-tag.danger { background: var(--red-bg); color: var(--red); }
+.pdf-root .wheel-tag.warn { background: var(--amber-bg); color: var(--amber-text); }
+.pdf-root .wheel-outcomes { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.pdf-root .wheel-why { margin-top: 6px; color: var(--muted); font-size: 12px; }
+.pdf-root .wheel-blocked-why { margin: 8px 0 0; font-size: 13px; color: var(--red); }
+.pdf-root .wheel-empty { color: var(--muted); }
+.pdf-root .wheel-status { font-size: 14px; font-weight: 600; margin: 4px 0; }
+.pdf-root .wheel-disclaimer { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+
+/* ── Venta de Primas (spreads de crédito de riesgo definido) ────────────── */
+.pdf-root .vp-disclaimer-top {
+  font-size: 13px; color: var(--muted); background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px 14px; margin: 0 0 4px; line-height: 1.5;
+}
+.pdf-root .vp-disclaimer-top b { color: var(--text); }
+.pdf-root .vp-strikes { font-size: 11px; margin-top: 2px; }
+.pdf-root .vp-earnings-badge {
+  margin-left: 6px; background: var(--red-bg); color: var(--red);
+  font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
+}
+.pdf-root .vp-premium-cara { background: var(--red-bg); color: var(--red); }
+.pdf-root .vp-premium-normal { background: var(--border-soft); color: var(--muted); }
+.pdf-root .vp-premium-barata { background: var(--green-bg); color: var(--green-dark); }
+.pdf-root .vp-pos { color: var(--green-dark); font-weight: 600; }
+.pdf-root .vp-neg { color: var(--red); font-weight: 600; }
+.pdf-root .vp-verdict-banner {
+  background: var(--red-bg); border: 1px solid rgba(240,68,56,0.3); color: var(--red);
+  border-radius: 10px; padding: 12px 16px; font-size: 13.5px; line-height: 1.5; margin: 4px 0 8px;
+}
+.pdf-root .vp-verdict-banner b { color: var(--red); }
+.pdf-root .vp-earnings-banner {
+  background: var(--amber-bg); border: 1px solid var(--amber-border); color: var(--amber-text);
+  border-radius: 10px; padding: 10px 16px; font-size: 13px; line-height: 1.5; margin: 0 0 8px;
+}
+.pdf-root .vp-notes { display: flex; flex-direction: column; gap: 6px; margin: 0 0 14px; }
+.pdf-root .vp-notes p {
+  font-size: 12px; color: var(--muted); margin: 0; line-height: 1.5;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
+}
+
+/* ── Hero de portada (Visionary Trades) ──────────────────────────────── */
+/* Panel oscuro propio, a pedido explícito con una imagen de
+   referencia (mockup original del rebrand) — el resto de la app se queda en
+   tema claro, esto es SOLO la portada. Tokens redefinidos localmente acá
+   adentro: como son variables CSS, cualquier `var(--x)` de los estilos de
+   abajo (heredados sin cambios del layout claro) resuelve al valor oscuro
+   automáticamente dentro de este árbol, sin tocar el :root global. */
+/* `.hero-page` reemplaza a `.wrap` SOLO en la portada — sin max-width ni
+   padding, para que `.hero` pueda ocupar el viewport entero de punta a
+   punta (nada de margen claro del `body` alrededor). */
+.pdf-root .hero-page { margin: 0; padding: 0; min-height: 100vh; }
+
+/* Ya no redefine tokens propios — :root es oscuro para toda la app ahora,
+   así que hereda los mismos var() que cualquier otra página. Lo único
+   propio de la portada es el layout de punta a punta y el brillo del
+   fondo. */
+.pdf-root .hero {
+  color: var(--text);
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  gap: 10px; padding: 32px 28px 52px;
+  min-height: 100vh;
+  background:
+    radial-gradient(ellipse 820px 420px at 18% -8%, rgba(47,107,255,0.20), transparent 60%),
+    radial-gradient(ellipse 820px 420px at 85% 8%, rgba(155,109,255,0.16), transparent 58%),
+    var(--bg);
+}
+
+.pdf-root .hero-topbar { display: flex; align-items: center; justify-content: space-between;
+  width: 100%; max-width: 1100px; margin-bottom: 8px; }
+.pdf-root .hero-wordmark { display: flex; align-items: center; gap: 10px; text-align: left; }
+.pdf-root .hero-wordmark-icon { width: 34px; height: 34px; object-fit: contain; border-radius: 8px; }
+.pdf-root .hero-wordmark-name { font-size: 17px; font-weight: 800; letter-spacing: 0.06em; color: var(--text); }
+.pdf-root .hero-wordmark-name span { color: var(--green); }
+.pdf-root .hero-wordmark-tag { font-size: 11px; color: var(--muted); margin-top: 1px; }
+.pdf-root .hero-topbar-right { display: flex; align-items: center; gap: 10px; }
+.pdf-root .hero-status { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
+  padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); }
+.pdf-root .hero-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.pdf-root .hero-status.open { color: var(--green-dark); }
+.pdf-root .hero-status.open .dot { background: var(--green); }
+.pdf-root .hero-status.closed { color: var(--muted); }
+
+.pdf-root .hero-tickers { display: flex; gap: 22px; flex-wrap: wrap; justify-content: center;
+  width: 100%; max-width: 1100px; padding: 10px 0 2px; }
+.pdf-root .hero-ticker { display: flex; align-items: baseline; gap: 7px; font-size: 13px; }
+.pdf-root .hero-ticker-sym { font-weight: 700; color: var(--text); }
+.pdf-root .hero-ticker-price { color: var(--muted); font-variant-numeric: tabular-nums; }
+.pdf-root .hero-ticker-chg { font-weight: 700; font-variant-numeric: tabular-nums; }
+.pdf-root .hero-ticker-chg.up { color: var(--green); }
+.pdf-root .hero-ticker-chg.down { color: var(--red); }
+
+.pdf-root .hero-greeting { font-size: 26px; font-weight: 700; letter-spacing: -0.01em; margin-top: 8px; }
+.pdf-root .hero-tagline { font-size: 14px; color: var(--muted); margin-top: -6px; }
+
+.pdf-root .hero-logo-wrap { position: relative; margin: 18px 0; }
+.pdf-root .hero-logo-wrap::before { content: ""; position: absolute; inset: -30px; z-index: 0;
+  background: radial-gradient(circle, rgba(109,141,255,0.35), rgba(155,109,255,0.18) 55%, transparent 72%);
+  filter: blur(18px); }
+.pdf-root .hero-logo { position: relative; z-index: 1; width: 140px; height: 140px; object-fit: contain;
+  border-radius: 28px; filter: drop-shadow(0 0 24px rgba(109,141,255,0.45)); }
+
+.pdf-root .hero-search-row { display: flex; gap: 10px; width: 100%; max-width: 560px; margin-top: 8px; }
+.pdf-root .hero-search { flex: 1; font: inherit; font-size: 15px; padding: 13px 18px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text); outline: none; }
+.pdf-root .hero-search:focus { border-color: var(--accent); }
+.pdf-root .hero-search-btn { font-size: 16px; width: 44px; height: 44px; flex: none;
+  border-radius: 50%; border: 1px solid var(--accent); background: var(--accent-dim); color: var(--accent);
+  cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.pdf-root .hero-search-btn:hover { filter: brightness(1.15); }
+
+.pdf-root .hero-chips { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 4px; }
+.pdf-root .hero-chip { font: inherit; font-size: 13px; font-weight: 700; padding: 7px 18px; border-radius: 999px;
+  border: 1.5px solid var(--border); background: var(--panel-2); cursor: pointer; }
+.pdf-root .hero-chip:hover { filter: brightness(1.3); }
+
+.pdf-root .hero-quick-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px;
+  width: 100%; max-width: 1080px; margin-top: 32px; }
+.pdf-root .hero-quick-card {
+  --card-color: var(--accent);
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  text-align: center; padding: 30px 18px 24px; border-radius: 22px;
+  border: 1px solid color-mix(in srgb, var(--card-color) 20%, var(--border));
+  background:
+    radial-gradient(120% 100% at 50% -10%, color-mix(in srgb, var(--card-color) 12%, transparent), transparent 55%),
+    var(--panel);
+  text-decoration: none; color: var(--text);
+  transition: transform .18s, border-color .18s, box-shadow .18s;
+}
+.pdf-root .hero-quick-card:hover {
+  border-color: color-mix(in srgb, var(--card-color) 55%, var(--border)); transform: translateY(-3px);
+  box-shadow: 0 16px 36px -14px color-mix(in srgb, var(--card-color) 55%, transparent);
+  text-decoration: none;
+}
+.pdf-root .hero-quick-badge { width: 82px; height: 82px; border-radius: 22px; display: flex; align-items: center; justify-content: center;
+  position: relative; overflow: hidden;
+  background: radial-gradient(circle at 50% 30%, color-mix(in srgb, var(--card-color) 48%, transparent), color-mix(in srgb, var(--card-color) 14%, transparent) 62%, transparent 80%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--card-color) 32%, transparent),
+    inset 0 -14px 20px -6px color-mix(in srgb, black 55%, transparent),
+    0 0 34px -4px color-mix(in srgb, var(--card-color) 70%, transparent);
+  margin-bottom: 16px; }
+.pdf-root .hero-quick-badge::before { content: ""; position: absolute; top: -30%; left: -20%; width: 80%; height: 60%;
+  background: linear-gradient(120deg, color-mix(in srgb, white 45%, transparent), transparent 70%);
+  transform: rotate(-18deg); filter: blur(2px); pointer-events: none; z-index: 2; }
+.pdf-root .hero-quick-badge::after { content: ""; position: absolute; bottom: 6px; left: 50%; width: 52%; height: 11px;
+  transform: translateX(-50%); border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(0,0,0,0.5), transparent 75%);
+  filter: blur(1.5px); pointer-events: none; }
+.pdf-root .hero-quick-badge svg { position: relative; z-index: 1;
+  filter: drop-shadow(0 4px 5px color-mix(in srgb, black 55%, transparent)); }
+.pdf-root .hero-quick-title { font-size: 16.5px; font-weight: 800; margin-top: 2px; }
+.pdf-root .hero-quick-desc { font-size: 12.5px; color: var(--muted); line-height: 1.55; max-width: 92%; }
+.pdf-root .hero-quick-pill { margin-top: 16px; width: 38px; height: 38px; border-radius: 50%; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  border: 1.5px solid color-mix(in srgb, var(--card-color) 55%, var(--border));
+  background: color-mix(in srgb, var(--card-color) 14%, transparent);
+  color: var(--card-color); }
+
+@media (max-width: 860px) {
+  .pdf-root .hero-quick-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+.pdf-root .hero-motto { font-size: 20px; font-weight: 700; margin-top: 36px; }
+.pdf-root .hero-motto-accent { color: var(--green); }
+.pdf-root .hero-motto-sub { font-size: 13px; color: var(--muted); margin-top: -4px; }
+
+.pdf-root .hero-stats-row { display: grid; grid-template-columns: 1fr 64px 1fr; gap: 16px; align-items: center;
+  width: 100%; max-width: 900px; margin-top: 24px; }
+.pdf-root .hero-stat-card { text-align: left; padding: 18px 20px; border-radius: 14px;
+  border: 1px solid var(--border); background: var(--panel); }
+.pdf-root .hero-stat-icon { font-size: 18px; }
+.pdf-root .hero-stat-title { font-size: 14px; font-weight: 700; margin-top: 4px; }
+.pdf-root .hero-stat-desc { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+.pdf-root .hero-stat-bar { height: 5px; border-radius: 3px; background: var(--border-soft); overflow: hidden; margin-top: 10px; }
+.pdf-root .hero-stat-bar .fill { height: 100%; border-radius: 3px; }
+.pdf-root .hero-stat-bar .fill.focus { width: 55%; background: var(--green); }
+.pdf-root .hero-stat-bar .fill.risk { background: var(--accent); }
+.pdf-root .hero-stat-foot { font-size: 11px; color: var(--faint); margin-top: 8px; }
+.pdf-root .hero-stat-center { display: flex; align-items: center; justify-content: center; }
+.pdf-root .hero-stat-center img { width: 44px; height: 44px; object-fit: contain; border-radius: 10px; opacity: 0.85; }
+
+.pdf-root .hero-footer { margin-top: 36px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.pdf-root .hero-footer-name { font-size: 12px; font-weight: 700; letter-spacing: 0.25em; color: var(--faint); }
+.pdf-root .hero-footer-social { display: flex; gap: 14px; font-size: 15px; color: var(--faint); }
+
+@media (max-width: 640px) {
+  .pdf-root .hero { padding: 20px 16px 32px; }
+  .pdf-root .hero-topbar { flex-direction: column; gap: 10px; align-items: flex-start; }
+  .pdf-root .hero-stats-row { grid-template-columns: 1fr; }
+  .pdf-root .hero-stat-center { display: none; }
+  .pdf-root .hero-quick-grid { grid-template-columns: 1fr; }
+}
+
+/* ============ Ajustes — cookie de MarketSnack (/ajustes) ============ */
+
+.pdf-root .ms-status-row { display: flex; align-items: center; gap: 8px; font-size: 15px; }
+.pdf-root .ms-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.pdf-root .ms-status-row.ok .ms-dot { background: var(--green); }
+.pdf-root .ms-status-row.ok strong { color: var(--green); }
+.pdf-root .ms-status-row.bad .ms-dot { background: var(--red); }
+.pdf-root .ms-status-row.bad strong { color: var(--red-soft); }
+.pdf-root .ms-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12px; color: var(--muted); }
+.pdf-root .ms-meta strong { color: var(--text); font-weight: 600; }
+.pdf-root .ms-meta code { background: var(--border-soft); padding: 1px 6px; border-radius: 4px; font-size: 11px; }
+
+.pdf-root .ms-textarea {
+  width: 100%; font: inherit; font-size: 12px; font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  color: var(--text); background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; resize: vertical; line-height: 1.5;
+}
+.pdf-root .ms-textarea:focus { outline: 2px solid var(--accent-dim); border-color: var(--accent); }
+.pdf-root .ms-textarea::placeholder { color: var(--faint); }
+
+.pdf-root .ms-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.pdf-root .ms-save-btn {
+  font: inherit; font-weight: 700; font-size: 13px; color: var(--bg); background: var(--accent);
+  border: none; border-radius: 999px; padding: 9px 22px; cursor: pointer;
+}
+.pdf-root .ms-save-btn:hover { filter: brightness(1.08); }
+.pdf-root .ms-save-btn:disabled { opacity: 0.6; cursor: default; }
+.pdf-root .ms-feedback { font-size: 13px; font-weight: 600; }
+.pdf-root .ms-feedback.ok { color: var(--green); }
+.pdf-root .ms-feedback.bad { color: var(--red-soft); }
