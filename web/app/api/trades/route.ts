@@ -18,6 +18,7 @@ import {
   type OptionType,
   type Direction,
 } from "@/lib/paperTrade";
+import { commissionOf } from "@/lib/commissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -139,8 +140,9 @@ export async function POST(req: Request) {
       if (t.status === "activa") {
         const exit = t.currentPrice ?? t.entryPrice;
         const closed: PaperTrade = { ...t, exitPrice: exit, exitAt: now, updatedAt: now, closeReason: "manual" };
-        const pnl = realizedPnl(closed);
-        return { ...closed, status: pnl >= 0 ? "ganada" : "perdida", verdict: `Cerrada a mano con P&L ${pnl >= 0 ? "+" : ""}$${Math.round(pnl)}.` };
+        const fees = commissionOf(closed.contracts, 1, true);
+        const pnl = realizedPnl(closed) - fees;
+        return { ...closed, fees, status: pnl >= 0 ? "ganada" : "perdida", verdict: `Cerrada a mano con P&L ${pnl >= 0 ? "+" : ""}$${Math.round(pnl)} (neto de $${fees.toFixed(2)} de comisiones).` };
       }
       return t; // ya cerrada
     });

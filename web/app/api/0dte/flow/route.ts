@@ -5,7 +5,8 @@
 // vender put = soporte, comprar put = cobertura/bajista, vender call = resistencia.
 
 import { classifyFlow } from "@/lib/flow";
-import { fetchFlow, MarketSnackError } from "@/lib/marketsnack";
+import { MarketSnackError } from "@/lib/marketsnack";
+import { fetchTickerFlow } from "@/lib/flowSources";
 import { aggressorReads } from "@/lib/zerodte";
 
 export const runtime = "nodejs";
@@ -29,10 +30,12 @@ export async function GET(request: Request) {
 
   try {
     const now = new Date();
-    const { trades } = await fetchFlow(ticker, {
+    const { trades } = await fetchTickerFlow(ticker, {
       period: "1d",
+      days: 1,
       minPremium: MIN_PREMIUM,
       maxPages: MAX_PAGES,
+      expirations: 2,
     });
     const { rows } = classifyFlow(trades, now);
     const reads = aggressorReads(rows, expiration);

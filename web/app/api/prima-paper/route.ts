@@ -23,6 +23,7 @@ import { addPass, candidateKey, filterByPersistence, loadWatch, noWindow } from 
 import { sendAlert } from "@/lib/telegram";
 import { primaClosedText, primaNotOpenedText, primaOpenedText, type PrimaNoOpenInfo } from "@/lib/alertText";
 import { fetchWindowQuotes, fetchWindowQuotesTt, scanSymbol, type QuotesResult } from "@/lib/spreadScan";
+import { prefetchEarningsDates } from "@/lib/earnings";
 import {
   fetchTastytradeChain, fetchQuoteToken, tastytradeConfigured,
   type QuoteToken, type TtContract,
@@ -31,8 +32,10 @@ import type { SpreadQuote } from "@/lib/creditSpread";
 import {
   RISK_PER_TRADE_MAX_PCT,
   START_EQUITY, closePosition, managePosition, planOpen, positionFrom,
-  reprice, sizeFor, sizeForBand, summarize, type PrimaPosition,
+  dteOn, reprice, sizeFor, sizeForBand, summarize, valorAlVencimiento, type PrimaPosition,
 } from "@/lib/primaPaper";
+import { closeOnDate, loadTfBars } from "@/lib/barSources";
+import { cachedTfBars } from "@/lib/barsStore";
 import { repriceFromChain } from "@/lib/primaReprice";
 import { commit, loadClosed, loadOpen, saveOpen } from "@/lib/primaPaperStore";
 
@@ -163,6 +166,23 @@ export async function POST(request: Request) {
   }
 }
 
+/**
+ * Cierre del subyacente en el día del vencimiento, para liquidar lo vencido.
+ *
+ * Por la cascada con cache (Tastytrade → … → Schwab) y NO por Massive directo.
+ * `closeOnDate` no busca el día más cercano a propósito: si falta ese día exacto
+ * devuelve null y la posición se queda abierta con su aviso, en vez de liquidarse
+ * con el cierre de otra sesión.
+ */
+async function cierreDelVencimiento(ticker: string, expiration: string): Promise<number | null> {
+  try {
+    const { bars } = await cachedTfBars(ticker, "1y", () => loadTfBars(ticker, "1y"));
+    return closeOnDate(bars, expiration);
+  } catch {
+    return null;
+  }
+}
+
 /** Re-cotiza las abiertas y aplica las reglas. Barato: una cadena por posición. */
 async function doManage() {
   const now = new Date();
@@ -177,6 +197,35 @@ async function doManage() {
   const ttToken = await scanToken(); // un token para todas las re-cotizaciones
 
   await mapLimit(abiertas, CONCURRENCY, async (p) => {
+    // ── VENCIDA: se liquida por INTRÍNSECO, no por cadena ──
+    //
+    // Va PRIMERO, antes de intentar re-cotizar, porque la cadena de un vencimiento
+    // pasado ya no existe: `repriceFromChain` devolvía null, el gestor dejaba la
+    // posición "sin evaluar" y se quedaba abierta para siempre. El 2026-09-07 había
+    // tres así, de 7 y 10 días, y mientras estuvieran ahí el capital de la cuenta
+    // no significaba nada.
+    //
+    // El precio de liquidación es el cierre del DÍA DEL VENCIMIENTO, no el de hoy:
+    // entre medias el subyacente se mueve y en una posición ajustada eso voltea el
+    // signo. Es la misma norma que la bitácora de swing.
+    if (dteOn(p.expiration, now) < 0) {
+      const cierre = await cierreDelVencimiento(p.ticker, p.expiration);
+      if (cierre == null) {
+        // Sin el cierre de ESE día no se inventa un precio: se dice y se mantiene.
+        notes.push(`${p.ticker}: venció el ${p.expiration} y no hay cierre de ese día para liquidarla. Se mantiene.`);
+        siguen.push(p);
+        return;
+      }
+      const valor = valorAlVencimiento(p, cierre);
+      const cerrada = closePosition(
+        reprice(p, valor),
+        `Venció el ${p.expiration} con el subyacente en ${cierre.toFixed(2)}: liquidada a valor intrínseco (${valor.toFixed(2)}).`,
+        now,
+      );
+      cerradas.push(cerrada);
+      return;
+    }
+
     let actualizada = p;
     try {
       const chain = await chainForReprice(p.ticker, p.expiration, now, ttToken);
@@ -236,6 +285,11 @@ async function escanearUniverso(now: Date, macroEvents: ReturnType<typeof macroE
 
   const ttToken = await scanToken(); // un token para todo el escaneo
   const fetchQuotes = makeFetchQuotes(ttToken);
+
+  // Fechas de earnings del universo en UNA tanda: `/market-metrics` acepta los 102
+  // símbolos de golpe, así que esto evita 102 peticiones sueltas dentro del bucle.
+  // Sin la llamada el escaneo funciona igual, solo que de uno en uno.
+  await prefetchEarningsDates(SPREAD_UNIVERSE.map((s) => s.ticker), now.getTime());
 
   await mapLimit(SPREAD_UNIVERSE, CONCURRENCY, async (sym) => {
     const r = await scanSymbol(sym, { now, macroEvents, bias: "neutral", expert: PAPER_EXPERT, fetchQuotes });

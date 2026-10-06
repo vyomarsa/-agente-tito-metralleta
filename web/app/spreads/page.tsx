@@ -5,7 +5,7 @@ import Link from "next/link";
 import SpreadCard from "@/app/components/SpreadCard";
 import SpreadsTable from "@/app/components/SpreadsTable";
 import { loadProfile } from "@/app/components/RiskProfileCard";
-import type { Bias, SpreadCandidate, SpreadScan } from "@/lib/creditSpread";
+import { MIN_CREDIT, type Bias, type SpreadCandidate, type SpreadScan } from "@/lib/creditSpread";
 import type { SpreadSseEvent, Source } from "./types";
 
 const KEY_VIEW = "tito.view";
@@ -125,7 +125,7 @@ export default function SpreadsPage() {
   return (
     <main className="ideas-page">
       <div className="hb">
-        <div className="hb-title">Venta de Prima <span className="hb-chip">4–7 DTE · Δ 0.10–0.15</span></div>
+        <div className="hb-title">Venta de Prima <span className="hb-chip">4–7 DTE · Δ 0.10–0.15 · crédito ≥ ${MIN_CREDIT.toFixed(2)}</span></div>
       </div>
 
       <div className="ideas-body">
@@ -202,8 +202,8 @@ export default function SpreadsPage() {
           <div className="wheel-status warn">
             ⚡ <b>Modo experto activo.</b> Los filtros de contexto —evento macro (FOMC/CPI/PCE),
             tendencia, soporte/resistencia guardián y 1σ— ya <b>no descartan</b>: aparecen como
-            avisos en cada ficha. La banda 4–7 DTE, delta 0.10–0.15 y toda la validación de
-            liquidez siguen intactas. Tú asumes el riesgo con criterio propio.
+            avisos en cada ficha. La banda 4–7 DTE, delta 0.10–0.15, el crédito mínimo y toda la
+            validación de liquidez siguen intactas. Tú asumes el riesgo con criterio propio.
           </div>
         )}
 

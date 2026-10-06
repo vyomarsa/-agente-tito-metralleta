@@ -12,6 +12,7 @@
 
 import { promises as fs } from "fs";
 import path from "path";
+import { splitForTelegram } from "./alertText";
 
 const TOKEN_FILE = path.join(process.cwd(), "data", "telegram.json");
 const API = "https://api.telegram.org";
@@ -308,13 +309,22 @@ export async function sendAlert(text: string): Promise<SendResult> {
     if (!token) return { ok: false, reason: "sin token de Telegram" };
     const chatId = await getAlertChatId();
     if (!chatId) return { ok: false, reason: "alertas sin conectar (falta chat de destino)" };
-    const res = await tgCall<unknown>(token, "sendMessage", {
-      chat_id: chatId,
-      text,
-      parse_mode: "HTML",
-      disable_web_page_preview: "true",
-    });
-    return res == null ? { ok: false, reason: "Telegram rechazó el envío" } : { ok: true, reason: "" };
+    // Telegram RECHAZA por encima de 4096 caracteres, y como esto es best-effort
+    // un aviso largo no fallaba ruidosamente: desaparecía. Con la venta de prima
+    // mandando hasta 5 órdenes completas en una tanda, trocear deja de ser opcional.
+    const trozos = splitForTelegram(text);
+    for (const trozo of trozos) {
+      const res = await tgCall<unknown>(token, "sendMessage", {
+        chat_id: chatId,
+        text: trozo,
+        parse_mode: "HTML",
+        disable_web_page_preview: "true",
+      });
+      // Si un trozo falla se corta: seguir mandando los siguientes dejaría un
+      // mensaje con un agujero en medio, que se lee peor que uno que no llegó.
+      if (res == null) return { ok: false, reason: "Telegram rechazó el envío" };
+    }
+    return { ok: true, reason: "" };
   } catch (e) {
     return { ok: false, reason: e instanceof Error ? e.message : "error inesperado" };
   }

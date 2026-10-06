@@ -6,6 +6,8 @@ import {
   eligibility,
   buildStructure,
   creditSpreadCandidates,
+  MIN_CREDIT,
+  MAX_COMISION_SOBRE_CREDITO,
   type SpreadQuote,
   type SpreadLevel,
   type CreditSpreadInput,
@@ -626,5 +628,57 @@ describe("creditSpreadCandidates — modo experto", () => {
     expect(w.some((x) => /macro/i.test(x))).toBe(true);
     expect(w.some((x) => /tendencia/i.test(x))).toBe(true);
     expect(w.some((x) => /soporte/i.test(x))).toBe(true);
+  });
+});
+
+// ── Crédito mínimo (2026-09-17) ─────────────────────────────────────────
+
+describe("crédito mínimo — las comisiones no pueden comerse más del 20%", () => {
+  // Corta 95 a mid 0,30. La larga de $1 (94) deja solo $0,07; la de $2 (93), $0,18.
+  const LARGA_1 = q({ strike: 94, type: "put", delta: -0.08, bid: 0.22, ask: 0.24 });
+  const LARGA_2 = q({ strike: 93, type: "put", delta: -0.04, bid: 0.11, ask: 0.13 });
+
+  it("se deriva de la tarifa: $2,60 de ida y vuelta / 20% = $0,13 por acción", () => {
+    expect(MIN_CREDIT).toBe(0.13);
+    expect(MAX_COMISION_SOBRE_CREDITO).toBe(0.2);
+  });
+
+  it("si el spread más ceñido ya paga, se queda con él", () => {
+    const c = build({ type: "put", short: SHORT_PUT, chain: [SHORT_PUT, LONG_PUT, LARGA_2] });
+    expect(c?.economics.width).toBe(1);
+    expect(c?.economics.credit).toBeCloseTo(0.15, 6);
+  });
+
+  it("si el ceñido no llega, ENSANCHA en vez de descartar la pata corta", () => {
+    const c = build({ type: "put", short: SHORT_PUT, chain: [SHORT_PUT, LARGA_1, LARGA_2] });
+    expect(c).not.toBeNull();
+    expect(c?.economics.width).toBe(2);
+    expect(c?.longLeg.strike).toBe(93);
+    expect(c?.economics.credit).toBeCloseTo(0.18, 6);
+  });
+
+  it("si ningún ancho llega, descarta y lo cuenta", () => {
+    const diag = { creditoBajo: 0 };
+    const c = build({ type: "put", short: SHORT_PUT, chain: [SHORT_PUT, LARGA_1], diag });
+    expect(c).toBeNull();
+    expect(diag.creditoBajo).toBe(1);
+  });
+
+  it("no cuenta como crédito bajo lo que ni siquiera es un crédito", () => {
+    const cara = q({ strike: 94, type: "put", delta: -0.1, bid: 0.35, ask: 0.37 });
+    const diag = { creditoBajo: 0 };
+    expect(build({ type: "put", short: SHORT_PUT, chain: [SHORT_PUT, cara], diag })).toBeNull();
+    expect(diag.creditoBajo).toBe(0);
+  });
+
+  it("aplica también en modo experto: es estructural, no de contexto", () => {
+    const c = build({ type: "put", short: SHORT_PUT, chain: [SHORT_PUT, LARGA_1], expert: true });
+    expect(c).toBeNull();
+  });
+
+  it("el escaneo dice que el descarte fue por crédito, no el motivo genérico", () => {
+    const r = creditSpreadCandidates({ ...ELIGIBLE_BASE, quotes: [SHORT_PUT, LARGA_1] });
+    expect(r.status).toBe("sin_candidatos");
+    expect(r.reason).toContain("crédito < $0.13");
   });
 });

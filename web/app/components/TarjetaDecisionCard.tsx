@@ -159,7 +159,7 @@ export default function TarjetaDecisionCard({ card }: { card: DecisionCard }) {
       {/* FLOW TAPE */}
       {card.flowTape.length > 0 && (
         <div className="card">
-          <div className="card-title">Institutional Flow Tape <span style={{ color: "var(--faint)", fontWeight: 500, fontSize: 12 }}>· prints reales · MarketSnack</span></div>
+          <div className="card-title">Institutional Flow Tape <span style={{ color: "var(--faint)", fontWeight: 500, fontSize: 12 }}>· prints reales · Tastytrade → MarketSnack</span></div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
               <thead>
@@ -221,7 +221,7 @@ export default function TarjetaDecisionCard({ card }: { card: DecisionCard }) {
       )}
 
       <p style={{ fontSize: 11, color: "var(--faint)", textAlign: "center", lineHeight: 1.6, borderTop: "1px solid var(--border)", paddingTop: 14 }}>
-        Análisis educativo estructurado (framework The Scout) sobre datos de MarketSnack/Massive/Schwab. No es asesoría
+        Análisis educativo estructurado (framework The Scout) sobre datos de Tastytrade (MarketSnack/Schwab de respaldo). No es asesoría
         de inversión ni una orden de compra/venta. La IA estructura evidencia; la decisión final y el riesgo son tuyos.
       </p>
     </div>

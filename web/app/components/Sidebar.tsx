@@ -15,10 +15,11 @@ const NAV: { href: string; label: string; icon: string; hint: string }[] = [
   { href: "/trades", label: "Mis Trades", icon: "📓", hint: "Paper trading (simulación)" },
   { href: "/spreads", label: "Venta Prima", icon: "✂️", hint: "Credit spreads 4–7 DTE (venta de prima)" },
   { href: "/0dte", label: "0DTE", icon: "🎯", hint: "Cadena del día (cero DTE)" },
+  { href: "/scalping", label: "Scalping", icon: "📐", hint: "Playbook del Rango — fase 1: observar los niveles" },
   { href: "/flow", label: "Time & Sales", icon: "⚡", hint: "Agresividad en vivo" },
   { href: "/tastytrade", label: "Tastytrade", icon: "📡", hint: "Fuente principal — IV Rank, greeks, cadena" },
   { href: "/schwab", label: "Schwab", icon: "🔗", hint: "Conexión del bróker" },
-  { href: "/ajustes", label: "Ajustes", icon: "⚙️", hint: "Cookie de MarketSnack" },
+  { href: "/ajustes", label: "Ajustes", icon: "⚙️", hint: "Fuentes, alertas y cookie de respaldo" },
 ];
 
 export default function Sidebar() {

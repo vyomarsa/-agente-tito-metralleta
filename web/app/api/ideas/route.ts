@@ -8,7 +8,8 @@
 // y nunca llega al servidor. Esta ruta devuelve los griegos; el cliente aplica sizeFlow.
 
 import { classifyFlow, type FlowRow } from "@/lib/flow";
-import { fetchMarketFlow, MarketSnackError } from "@/lib/marketsnack";
+import { MarketSnackError } from "@/lib/marketsnack";
+import { fetchMarketFlowCascade } from "@/lib/marketFlow";
 import { isTradeableIdea, passesQualityFilter, withinMoneyness, MONEYNESS_CAP } from "@/lib/risk";
 import { loadTrades, saveTrades } from "@/lib/store";
 import { fetchDailyBars } from "@/lib/massive";
@@ -60,18 +61,26 @@ export async function GET() {
       const send = (e: SseEvent) => controller.enqueue(encoder.encode(sse(e)));
 
       try {
-        send({ type: "step", label: "Escaneando el flujo de todo el mercado…" });
+        send({ type: "step", label: "Leyendo el flujo del universo…" });
 
-        const { trades, pages, truncated } = await fetchMarketFlow({
+        // Con Tastytrade "todo el mercado" es el universo barrido (102 símbolos):
+        // su streamer no tiene feed de mercado. Se dice en pantalla para que nadie
+        // lea este escaneo como si cubriera todo lo que cotiza.
+        const { trades, source, updatedAt, stale, universe } = await fetchMarketFlowCascade({
           period: PERIOD,
+          days: 1,
           minPremium: MIN_PREMIUM,
           maxPages: MAX_PAGES,
-          onPage: (page, accumulated) => {
-            send({
-              type: "step",
-              label: `Página ${page} — ${accumulated} operaciones grandes`,
-            });
-          },
+        });
+        const pages = 0;
+        const truncated = false;
+        send({
+          type: "step",
+          label:
+            source === "tastytrade"
+              ? `Flujo de Tastytrade — universo de ${universe ?? "?"} símbolos${stale ? " (barrido viejo)" : ""}`
+              : "Flujo de MarketSnack — mercado completo",
+          detail: updatedAt ? `barrido ${new Date(updatedAt).toLocaleString("es-ES")}` : undefined,
         });
 
         send({ type: "step", label: `Clasificando ${trades.length} operaciones…` });

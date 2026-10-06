@@ -14,7 +14,10 @@
 // poner precio de salida si no lo tiene.
 
 import { loadPaperTrades, savePaperTrades } from "@/lib/paperTradeStore";
-import { evaluate, isClosed, isExpired, isOpen, summarize, type PaperTrade } from "@/lib/paperTrade";
+import {
+  equityOf, evaluate, isClosed, isExpired, isOpen, summarize, type PaperTrade,
+} from "@/lib/paperTrade";
+import { quoteSymbolFor } from "@/lib/autopilot";
 import { closeOnDate, loadTfBars } from "@/lib/barSources";
 import { cachedTfBars } from "@/lib/barsStore";
 import { promises as fs } from "fs";
@@ -89,20 +92,40 @@ async function underlyingPrices(
   tickers: string[],
   ttToken?: QuoteToken,
 ): Promise<{ prices: Map<string, number>; source: string }> {
+  /**
+   * Se cotiza por el símbolo TRADUCIDO (`SPXW` → `SPX`) y se devuelve indexado por el
+   * ticker del PLAN, que es con lo que `evaluate` va a buscar. Sin esto, las opciones
+   * semanales de índice no reciben precio jamás y sus planes mueren caducados sin
+   * haber podido cruzar el gatillo — ver `QUOTE_UNDERLYING`.
+   */
+  const porSimbolo = new Map<string, string[]>();
+  for (const t of tickers) {
+    const sym = quoteSymbolFor(t);
+    porSimbolo.set(sym, [...(porSimbolo.get(sym) ?? []), t]);
+  }
+  const simbolos = [...porSimbolo.keys()];
+  const repartir = (bySymbol: Map<string, number>): Map<string, number> => {
+    const out = new Map<string, number>();
+    for (const [sym, price] of bySymbol) {
+      for (const t of porSimbolo.get(sym) ?? []) out.set(t, price);
+    }
+    return out;
+  };
+
   if (ttToken) {
     try {
-      const tt = await fetchTastytradeQuotes(tickers, { quoteToken: ttToken });
-      const prices = new Map<string, number>();
-      for (const [ticker, q] of tt) if (q.price != null) prices.set(ticker, q.price);
-      if (prices.size > 0) return { prices, source: "tastytrade" };
+      const tt = await fetchTastytradeQuotes(simbolos, { quoteToken: ttToken });
+      const bySymbol = new Map<string, number>();
+      for (const [sym, q] of tt) if (q.price != null) bySymbol.set(sym, q.price);
+      if (bySymbol.size > 0) return { prices: repartir(bySymbol), source: "tastytrade" };
     } catch {
       // cae a Massive
     }
   }
-  const quotes = await fetchQuotes(tickers).catch(() => []);
-  const prices = new Map<string, number>();
-  for (const q of quotes) if (q.price != null) prices.set(q.ticker, q.price);
-  return { prices, source: prices.size > 0 ? "massive" : "ninguna" };
+  const quotes = await fetchQuotes(simbolos).catch(() => []);
+  const bySymbol = new Map<string, number>();
+  for (const q of quotes) if (q.price != null) bySymbol.set(q.ticker, q.price);
+  return { prices: repartir(bySymbol), source: bySymbol.size > 0 ? "massive" : "ninguna" };
 }
 
 /** Mid utilizable de una horquilla. Sin los dos lados no hay mid que valga. */
@@ -251,7 +274,7 @@ async function pasadaDeFechas(all: PaperTrade[], now: Date) {
     modo: "fechas",
     changed: cambios,
     revisados: all.filter((t) => t.status === "pendiente").length,
-    tally: { activadas: 0, ganadas: 0, perdidas: 0, ...tally },
+    tally: { activadas: 0, ganadas: 0, perdidas: 0, sinTamano: 0, invalidadas: 0, ...tally },
     caducadasTickers,
     trades: next,
     summary: summarize(next),
@@ -313,19 +336,42 @@ export async function POST(request: Request) {
   // --- Avanza cada trade abierto con la lógica pura ---
   let changed = 0;
   const revisados = open.length;
-  const tally = { activadas: 0, caducadas: 0, expiradas: 0, ganadas: 0, perdidas: 0 };
+  const tally = {
+    activadas: 0, caducadas: 0, invalidadas: 0, expiradas: 0,
+    ganadas: 0, perdidas: 0, sinTamano: 0,
+  };
   const caducadasTickers: string[] = [];
+  /**
+   * Planes que cruzaron el gatillo y NO entraron porque ni un contrato cabía en la
+   * banda 2–3%. Se reporta por la regla de "no silent caps" del proyecto: sin esto,
+   * la bitácora diría "activadas 0" y se leería como que el mercado no dio señales,
+   * cuando lo que pasó es que la señal no cabía en el capital. Es exactamente el
+   * fallo mudo que ya costó una lectura equivocada en venta de prima.
+   */
+  const noCaben: string[] = [];
+  /** Tickers que quedan libres porque su plan cruzó el stop antes del gatillo. */
+  const invalidadasTickers: string[] = [];
   /** Contratos que existen en la bitácora pero no aparecieron en ninguna cadena. */
   const sinPrima: string[] = [];
   /** Vencidas liquidadas a intrínseco: se reporta porque su P&L no sale de una cotización. */
   const liquidadas: string[] = [];
+
+  /**
+   * Capital con el que se dimensiona esta pasada. Se calcula UNA vez sobre el libro
+   * de entrada, a propósito: si se recalculara dentro del `map`, dos activaciones de
+   * la misma pasada se dimensionarían con capitales distintos según el orden del
+   * array, que es un detalle de almacenamiento y no una decisión de riesgo.
+   */
+  const equity = equityOf(all);
 
   const next: PaperTrade[] = all.map((t) => {
     if (!isOpen(t)) return t;
     const u = underlyingBy.get(t.ticker) ?? null;
     const mark = markBy.get(`${t.ticker}|${t.expiration}|${contractKey(t.optionType, t.strike)}`) ?? null;
     if (mark == null) sinPrima.push(`${t.ticker} ${t.strike}${t.optionType === "call" ? "C" : "P"} ${t.expiration}`);
-    const updated = evaluate(t, u, mark, now, settle.get(`${t.ticker}|${t.expiration}`) ?? null);
+    const updated = evaluate(
+      t, u, mark, now, settle.get(`${t.ticker}|${t.expiration}`) ?? null, equity,
+    );
     if (updated.status !== t.status || updated.updatedAt !== t.updatedAt) changed++;
 
     if (t.status === "pendiente" && updated.status === "activa") tally.activadas++;
@@ -333,9 +379,15 @@ export async function POST(request: Request) {
       if (updated.closeReason === "expirada" && t.entryPrice != null && updated.exitPrice != null) {
         liquidadas.push(`${t.ticker} ${t.strike}${t.optionType === "call" ? "C" : "P"} → ${updated.exitPrice}`);
       }
-      if (updated.closeReason === "caducada") {
+      if (updated.closeReason === "sin_tamano") {
+        tally.sinTamano++;
+        noCaben.push(`${t.ticker} $${(mark ?? 0).toFixed(2)} (=$${Math.round((mark ?? 0) * 100)}/contrato)`);
+      } else if (updated.closeReason === "caducada") {
         tally.caducadas++;
         caducadasTickers.push(t.ticker);
+      } else if (updated.closeReason === "invalidada") {
+        tally.invalidadas++;
+        invalidadasTickers.push(t.ticker);
       } else if (updated.closeReason === "expirada") tally.expiradas++;
       else if (updated.status === "ganada") tally.ganadas++;
       else if (updated.status === "perdida") tally.perdidas++;
@@ -346,10 +398,14 @@ export async function POST(request: Request) {
   await savePaperTrades(next);
 
   const detalle = caducadasTickers.length ? ` [${caducadasTickers.join(", ")}]` : "";
+  const noCabenDetalle = noCaben.length ? ` no caben ${tally.sinTamano} [${noCaben.join(", ")}] · ` : "";
   await log(
-    `OK      refresh — revisados ${revisados} · spot ${fuenteSpot} · sin prima ${sinPrima.length} · ` +
+    `OK      refresh — revisados ${revisados} · spot ${fuenteSpot} · capital $${equity} · ` +
+      `sin prima ${sinPrima.length} · ` +
       (liquidadas.length ? `liquidadas ${liquidadas.length} [${liquidadas.join(", ")}] · ` : "") +
-      `activadas ${tally.activadas} · caducadas ${tally.caducadas}${detalle} · ganadas ${tally.ganadas} · ` +
+      `activadas ${tally.activadas} · ` + noCabenDetalle +
+      (tally.invalidadas ? `invalidadas ${tally.invalidadas} [${invalidadasTickers.join(", ")}] · ` : "") +
+      `caducadas ${tally.caducadas}${detalle} · ganadas ${tally.ganadas} · ` +
       `perdidas ${tally.perdidas} · expiradas ${tally.expiradas}`,
   );
 
@@ -359,6 +415,9 @@ export async function POST(request: Request) {
     revisados,
     tally,
     caducadasTickers,
+    invalidadasTickers,
+    noCaben,
+    equity,
     trades: next,
     summary: summarize(next),
     source: { spot: fuenteSpot, chain: ttToken ? "tastytrade→marketsnack" : "marketsnack" },

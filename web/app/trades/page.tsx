@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { px } from "../format";
 import {
-  realizedPnl,
-  unrealizedPnl,
+  netRealizedPnl,
+  netUnrealizedPnl,
   securedGain,
   PENDING_MAX_DAYS,
   type PaperTrade,
@@ -16,15 +16,22 @@ import {
   dteOn,
   lossPct,
   managePosition,
+  feesOf,
   maxRiskOf,
+  netPnlOf,
   pnlOf,
   profitPct,
   type PrimaPosition,
   type PrimaSpreadType,
   type PrimaSummary,
 } from "@/lib/primaPaper";
+import { MIN_CREDIT } from "@/lib/creditSpread";
 import {
+  feesOf as zeroFeesOf,
   maxRiskOf as zeroRiskOf,
+  TRAIL_ARMA_PCT,
+  TRAIL_DEVOLUCION_PCT,
+  netPnlOf as zeroNetPnlOf,
   pnlOf as zeroPnlOf,
   returnPct as zeroReturnOf,
   type ZeroPaperPosition,
@@ -98,6 +105,7 @@ function matchesTab(t: PaperTrade, tab: TabId): boolean {
 interface ZpResponse {
   error?: string;
   summary?: ZeroPaperSummary;
+  limiteDiario?: { perdidas: number; tope: number; alcanzado: boolean; pnlHoy: number };
   open?: ZeroPaperPosition[];
   closed?: ZeroPaperPosition[];
 }
@@ -165,9 +173,20 @@ export default function TradesPage() {
         if (t.ganadas) partes.push(`${t.ganadas} ganada(s)`);
         if (t.perdidas) partes.push(`${t.perdidas} perdida(s)`);
         if (t.expiradas) partes.push(`${t.expiradas} expirada(s)`);
+        if (t.invalidadas) {
+          const quienes = d.invalidadasTickers?.length ? ` (${d.invalidadasTickers.join(", ")})` : "";
+          partes.push(`${t.invalidadas} invalidada(s)${quienes} · cruzó el stop sin disparar · ticker libre`);
+        }
         if (t.caducadas) {
           const quienes = d.caducadasTickers?.length ? ` (${d.caducadasTickers.join(", ")})` : "";
           partes.push(`${t.caducadas} caducada(s)${quienes} · ticker libre para el piloto`);
+        }
+        // Se dice SIEMPRE que ocurre: sin esto la pasada informaría "0 activadas" y
+        // se leería como que el mercado no dio señales, cuando lo que pasó es que la
+        // señal no cabía en el capital.
+        if (t.sinTamano) {
+          const cuales = d.noCaben?.length ? ` (${d.noCaben.join(", ")})` : "";
+          partes.push(`${t.sinTamano} no cabe(n) en el capital${cuales} · no entraron`);
         }
       }
       const detalle = partes.length ? ` · ${partes.join(" · ")}` : " · sin cambios";
@@ -276,11 +295,29 @@ export default function TradesPage() {
         {/* El P&L solo suma los cierres CON los dos precios. Los que se cerraron sin
             prima de salida cuentan para el acierto pero no para el dinero, y eso se
             dice aquí: dar el P&L a secas escondía que faltaban operaciones. */}
+        {/* El capital va PRIMERO porque desde el 2026-08-28 no es decorativo: es la
+            base con la que se dimensiona cada entrada (banda 2–3%). */}
+        {/* El capital y el P&L pueden NO cuadrar, y el hint lo dice cuando pasa: el
+            capital solo cuenta lo que nació dimensionado, porque los cierres de antes
+            del 2026-08-28 se abrieron con 1 contrato fuera cual fuera la prima y sus
+            dólares describen el bug, no una cuenta (ver equityOf). */}
+        <Stat
+          label="Capital simulado"
+          value={s ? `$${s.equity.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+          tone={s && s.equity >= s.startEquity ? "up" : "down"}
+          hint={
+            s
+              ? s.unsizedClosed > 0
+                ? `de $${s.startEquity.toLocaleString("en-US")} · sin las ${s.unsizedClosed} de antes de dimensionar`
+                : `de $${s.startEquity.toLocaleString("en-US")} · dimensiona al 2–3%`
+              : undefined
+          }
+        />
         <Stat
           label="P&L neto · cerrado"
           value={s ? signed(s.closedPnl) : "—"}
           tone={s && s.closedPnl >= 0 ? "up" : "down"}
-          hint={s ? (s.priced > 0 ? `${s.priced} con precio` : "ninguna con precio") : undefined}
+          hint={s ? (s.priced > 0 ? `${s.priced} con precio · $${s.feesPaid.toFixed(2)} en comisiones` : "ninguna con precio") : undefined}
         />
         <Stat
           label="Aciertos"
@@ -309,6 +346,13 @@ export default function TradesPage() {
           value={s ? `${s.pending} / ${s.active}` : "—"}
           hint={s && s.active > 0 ? `(${signed(s.openUnrealized)})` : undefined}
         />
+        {s != null && s.sinTamano > 0 && (
+          <Stat
+            label="No cupieron"
+            value={`${s.sinTamano}`}
+            hint="cruzaron el gatillo pero ni un contrato entra en el 3%"
+          />
+        )}
       </div>
       )}
 
@@ -412,7 +456,7 @@ function TradeCard({
   onDelete: () => void;
 }) {
   const closed = t.status === "ganada" || t.status === "perdida" || t.status === "expirada";
-  const pnl = closed ? realizedPnl(t) : unrealizedPnl(t);
+  const pnl = closed ? netRealizedPnl(t) : netUnrealizedPnl(t);
   const secured = securedGain(t);
   const arrow = t.direction === "up" ? "↑" : "↓";
   const sube = t.direction === "up";
@@ -619,7 +663,12 @@ function VentaPrimaPanel({ vp }: { vp: VpResponse | null }) {
           tone={tono}
           hint={`de $${s.startEquity.toLocaleString("en-US")} · ${s.returnPct >= 0 ? "+" : ""}${s.returnPct}%`}
         />
-        <Stat label="P&L realizado" value={signed(s.realizedPnl)} tone={tono} hint={`${s.trades} cerrada(s)`} />
+        <Stat
+          label="P&L neto · cerrado"
+          value={signed(s.realizedPnl)}
+          tone={tono}
+          hint={`${s.trades} cerrada(s) · $${s.feesPaid.toFixed(2)} en comisiones (bruto ${signed(s.grossPnl)})`}
+        />
         <Stat label="Aciertos" value={`${s.wins}W · ${s.losses}L`} hint={s.neutral ? `${s.neutral} neutra(s)` : undefined} />
         <Stat
           label="Win rate"
@@ -630,7 +679,8 @@ function VentaPrimaPanel({ vp }: { vp: VpResponse | null }) {
 
       <div className="vp-note">
         ✂️ Venta de prima en <b>paper</b>, con el mismo motor de <b>Venta Prima</b> (103 símbolos,
-        Δ 0.10–0.15, 4–7 DTE). Abre los <b>lunes</b>, revisa la pérdida del <b>30%</b> desde el
+        Δ 0.10–0.15, 4–7 DTE, crédito mínimo ${MIN_CREDIT.toFixed(2)} para que las comisiones no se
+        coman más del 20%). Abre los <b>lunes</b>, revisa la pérdida del <b>30%</b> desde el
         miércoles, y aguanta a vencimiento salvo que el viernes retroceda desde el 50%.
         {abiertas.length > 0 && (
           <>
@@ -657,7 +707,7 @@ function VentaPrimaPanel({ vp }: { vp: VpResponse | null }) {
             <thead>
               <tr>
                 <th>Cierre</th><th>Subyacente</th><th>Tipo</th><th>Strikes</th>
-                <th>Ctr</th><th>Crédito</th><th>Colateral</th><th>P&L</th><th>Capturado</th><th>Motivo</th>
+                <th>Ctr</th><th>Crédito</th><th>Colateral</th><th title="Neto de comisiones">P&L neto</th><th>Capturado</th><th>Motivo</th>
               </tr>
             </thead>
             <tbody>
@@ -670,7 +720,7 @@ function VentaPrimaPanel({ vp }: { vp: VpResponse | null }) {
                   <td>×{t.contracts}</td>
                   <td>{m0(t.entryCredit * 100 * t.contracts)}</td>
                   <td>{m0(maxRiskOf(t) * t.contracts)}</td>
-                  <td className={(t.realizedPnl ?? 0) >= 0 ? "up" : "down"}>{signed(t.realizedPnl ?? 0)}</td>
+                  <td className={netPnlOf(t) >= 0 ? "up" : "down"}>{signed(netPnlOf(t))}</td>
                   <td>{p0(profitPct(t))}</td>
                   <td className="vp-mut vp-why">{t.closeReason || "—"}</td>
                 </tr>
@@ -702,7 +752,8 @@ function PrimaPositionCard({ p }: { p: PrimaPosition }) {
 
   const capturado = profitPct(p);              // fracción del crédito ya ganada
   const perdida = lossPct(p);
-  const pnl = pnlOf(p);
+  // Neto de la comisión de apertura, igual que el latente del resumen.
+  const pnl = pnlOf(p) - feesOf(p);
   const creditoTotal = p.entryCredit * 100 * p.contracts;
   const riesgoContrato = maxRiskOf(p);
   const colateral = riesgoContrato * p.contracts;
@@ -856,24 +907,53 @@ function ZeroDtePanel({ zp }: { zp: ZpResponse | null }) {
           tone={tono}
           hint={`de $${s.startEquity.toLocaleString("en-US")} · ${retorno >= 0 ? "+" : ""}${retorno.toFixed(2)}%`}
         />
-        <Stat label="P&L realizado" value={signed(s.realizedPnl)} tone={tono} hint={`${s.closedCount} cerrada(s)`} />
+        <Stat
+          label="P&L neto · cerrado"
+          value={signed(s.realizedPnl)}
+          tone={tono}
+          hint={`${s.closedCount} cerrada(s) · $${s.feesPaid.toFixed(2)} en comisiones (bruto ${signed(s.grossPnl)})`}
+        />
         <Stat
           label="Aciertos"
-          value={`${s.wins}W · ${s.losses}L`}
-          hint={s.expired ? `${s.expired} expirada(s)` : undefined}
+          value={`${s.winsMoney}W · ${s.lossesMoney}L`}
+          hint={s.expired ? `${s.expired} cerrada(s) al fin de sesión` : undefined}
         />
+        {/* DOS win rates, y el de arriba es el que va con el dinero — misma norma
+            que en Swing. El "por desenlace" excluye las `expirada`, que el P&L SÍ
+            suma: medido el 2026-09-07, 49% contra 42%, y las 8 que el primero no
+            veía cargaban −$784, el 71% de toda la pérdida. */}
         <Stat
-          label="Win rate"
-          value={s.winRate != null ? `${s.winRate}%` : "—"}
-          hint={s.winRate != null ? "sobre las decididas" : "aún sin cierres"}
+          label="Win rate · con dinero"
+          value={s.winRateMoneyPct != null ? `${s.winRateMoneyPct}%` : "—"}
+          hint={s.winRateMoneyPct != null ? "las mismas que suman al P&L" : "aún sin cierres"}
         />
+        {s.expired > 0 && (
+          <Stat
+            label="Win rate · por desenlace"
+            value={s.winRate != null ? `${s.winRate}%` : "—"}
+            hint={`deja fuera ${s.expired} cerrada(s) al fin de sesión`}
+          />
+        )}
       </div>
 
       <div className="vp-note">
         🎯 <b>0DTE en paper.</b> Compra el contrato del <b>GEX Ticket</b> al mid cuando el agente
         tiene señal viva, arriesgando el 2% del capital. Cierra al objetivo o al stop del
-        subyacente, y liquida lo que quede vivo al cierre de sesión. El tick corre cada minuto
+        subyacente, <b>asegura el {Math.round((1 - TRAIL_DEVOLUCION_PCT) * 100)}% de la ganancia</b> si una posición que llegó a +{Math.round(TRAIL_ARMA_PCT * 100)}% empieza a devolverla, y{" "}
+        <b>cierra por reloj a las 15:30 ET</b> lo que siga vivo — un 0DTE que llega a la campana sin
+        estar ITM vale cero. El tick corre cada minuto
         de sesión (9:30-16:00 ET) <b>aunque no haya nadie mirando</b>.
+        {zp.limiteDiario && (
+          <>
+            {" "}<b>Límite diario:</b> tras {zp.limiteDiario.tope === 1 ? "la primera pérdida" : `${zp.limiteDiario.tope} pérdidas`} del
+            día no abre nada más.{" "}
+            {zp.limiteDiario.alcanzado ? (
+              <b className="down">⛔ Hoy ya saltó ({signed(zp.limiteDiario.pnlHoy)}): no abre más hasta mañana.</b>
+            ) : (
+              <>Hoy: {zp.limiteDiario.perdidas} pérdida(s), sigue operando.</>
+            )}
+          </>
+        )}
         {abiertas.length > 0 && (
           <>
             {" "}· <b>{abiertas.length}</b> abierta(s) · no realizado <b>{signed(s.openPnl)}</b>
@@ -891,6 +971,44 @@ function ZeroDtePanel({ zp }: { zp: ZpResponse | null }) {
               <span className="vp-mut">{m.closed} cerrada(s) · {m.wins}W</span>
               <span className="vp-strikes">{m.winRate != null ? `${m.winRate}%` : "—"}</span>
               <span className={m.pnl >= 0 ? "up" : "down"}>{signed(m.pnl)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Modelo × VERSIÓN. Se enseña en cuanto conviven dos geometrías, porque es lo
+          único con lo que se puede juzgar un modelo: el "25%" de momentum en la fila
+          de arriba son 10 operaciones del cono viejo y UNA del nuevo, y leerlo al lado
+          del 50% de magnet lleva justo a la conclusión contraria a la verdad. Se avisa
+          cuando la muestra es demasiado corta para concluir nada. */}
+      {s.byVersion.length > 1 && s.byModelVersion.length > 0 && (
+        <div className="vp-open">
+          {s.byModelVersion.map((r) => (
+            <div key={`${r.model}-${r.version}`} className="vp-openrow">
+              <b>{MODEL_LABEL[r.model] ?? r.model} · v{r.version}</b>
+              <span className="vp-mut">
+                {r.closed} cerrada(s) · {r.wins}W{r.closed < 10 ? " · muestra corta" : ""}
+              </span>
+              <span className="vp-strikes">{r.winRate != null ? `${r.winRate}%` : "—"}</span>
+              <span className={r.pnl >= 0 ? "up" : "down"}>{signed(r.pnl)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Por LADO × versión. El win rate aquí va CON DINERO (signo del P&L): por
+          desenlace escondería justo donde el corto pierde — 4 de sus 9 pérdidas de
+          v2 murieron en la campana, y esas no cuentan como "perdida". */}
+      {s.bySide.length > 0 && (
+        <div className="vp-open">
+          {s.bySide.map((r) => (
+            <div key={`${r.side}-${r.version}`} className="vp-openrow">
+              <b>{r.side === "LONG" ? "📈 Largo" : "📉 Corto"} · v{r.version}</b>
+              <span className="vp-mut">
+                {r.closed} cerrada(s) · {r.wins}W{r.closed < 10 ? " · muestra corta" : ""}
+              </span>
+              <span className="vp-strikes">{r.winRate != null ? `${r.winRate}%` : "—"}</span>
+              <span className={r.pnl >= 0 ? "up" : "down"}>{signed(r.pnl)}</span>
             </div>
           ))}
         </div>
@@ -929,7 +1047,7 @@ function ZeroDtePanel({ zp }: { zp: ZpResponse | null }) {
               <tr>
                 <th>Cierre</th><th>Ticker</th><th>Contrato</th><th>Modelo</th><th>Ctr</th>
                 <th>Prima pagada</th><th>Entrada→Salida</th><th>Pico</th><th>Rend.</th>
-                <th>Subyacente · obj / stop</th><th>P&L</th><th>Motivo</th>
+                <th>Subyacente · obj / stop</th><th title="Neto de comisiones">P&L neto</th><th>Motivo</th>
               </tr>
             </thead>
             <tbody>
@@ -951,7 +1069,7 @@ function ZeroDtePanel({ zp }: { zp: ZpResponse | null }) {
                     <td className="vp-mut">
                       {p.entrySpot.toFixed(2)} · {p.target.toFixed(2)} / {p.stop.toFixed(2)}
                     </td>
-                    <td className={(p.realizedPnl ?? 0) >= 0 ? "up" : "down"}>{signed(p.realizedPnl ?? 0)}</td>
+                    <td className={zeroNetPnlOf(p) >= 0 ? "up" : "down"}>{signed(zeroNetPnlOf(p))}</td>
                     <td className="vp-mut vp-why">{ZP_REASON[p.closeReason ?? ""] ?? p.closeReason ?? "—"}</td>
                   </tr>
                 );
@@ -978,7 +1096,8 @@ function ZeroDtePanel({ zp }: { zp: ZpResponse | null }) {
  * que abre y cierra, para que la ficha no pueda enseñar un P&L distinto del que manda.
  */
 function ZeroPositionCard({ p }: { p: ZeroPaperPosition }) {
-  const pnl = zeroPnlOf(p);
+  // Neto de la comisión de apertura, igual que el latente del resumen.
+  const pnl = zeroPnlOf(p) - zeroFeesOf(p);
   const rend = zeroReturnOf(p);
   const prima = zeroRiskOf(p);                      // prima pagada = riesgo máximo
   const ahora = p.currentPrice * 100 * p.contracts;

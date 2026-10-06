@@ -10,7 +10,8 @@
 // exactamente lo que la pantalla enseña.
 
 import { MassiveError } from "@/lib/massive";
-import { fetchFlow, MarketSnackError } from "@/lib/marketsnack";
+import { fetchTickerFlow } from "@/lib/flowSources";
+import { MarketSnackError } from "@/lib/marketsnack";
 import { classifyFlow } from "@/lib/flow";
 import { aggressorReads } from "@/lib/zerodte";
 import { buildTape, emptyTape } from "@/lib/zerodteTape";
@@ -45,7 +46,12 @@ export async function GET(request: Request) {
     // la respuesta si el Time & Sales tarda.
     const [scan, flowRaw] = await Promise.all([
       scanZeroDte(ticker, requestedExp, now),
-      fetchFlow(ticker, { period: "1d", minPremium: FLOW_MIN_PREMIUM, maxPages: FLOW_MAX_PAGES })
+      fetchTickerFlow(ticker, {
+        period: "1d", days: 1, minPremium: FLOW_MIN_PREMIUM, maxPages: FLOW_MAX_PAGES,
+        // La cinta del día solo mira el vencimiento de hoy y el siguiente: pedir los
+        // 8 de siempre multiplicaría por cuatro los símbolos que escucha el streamer.
+        expirations: 2,
+      })
         .then((f) => f.trades)
         .catch(() => []),
     ]);
@@ -126,6 +132,7 @@ export async function GET(request: Request) {
       etMinute: scan.etMinute,
       spot,
       spotSource: scan.spotSource,
+      chainSource: scan.chainSource,
       change: scan.change,
       changePercent: scan.changePercent,
       contractCount: scan.contracts.length,
@@ -135,9 +142,11 @@ export async function GET(request: Request) {
         tradeAlt: scan.tradeAlt,
         ticket: scan.ticket,
         ticketNote: scan.ticketNote,
+        spreads: scan.spreads,
         bias,
         biasAlt,
         pinning: scan.pinning,
+        close: scan.close,
       },
       tape,
       flow: { reads: reads.slice(0, 40), summary: { bullish, bearish } },

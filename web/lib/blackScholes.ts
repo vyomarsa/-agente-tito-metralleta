@@ -97,3 +97,24 @@ export function impliedVol(
   }
   return (lo + hi) / 2;
 }
+
+/**
+ * Charm (r = q = 0): variación del delta por el PASO DEL TIEMPO, `∂Δ/∂T` con T =
+ * tiempo restante = `−φ(d1)·d2 / (2T)`. Con q = 0 es idéntica para call y put
+ * (Δ_put = Δ_call − 1, así que la derivada es la misma), por eso no recibe tipo.
+ *
+ * Es el griego del 0DTE: escala como 1/T, así que a media sesión es leve y en la
+ * última hora domina. El delta que se desvanece obliga al dealer a deshacer
+ * cobertura, y ESE flujo mecánico es el que empuja el precio hacia el cierre
+ * (el "pin" o la deriva de fin de día).
+ *
+ * Va con r = 0 igual que `bsGamma`: el GEX del 0DTE está calibrado así y a horas
+ * del vencimiento la tasa no mueve la aguja.
+ */
+export function bsCharm(spot: number, strike: number, T: number, iv: number): number {
+  if (invalid(spot, strike, T, iv)) return 0;
+  const sqrtT = Math.sqrt(T);
+  const d1 = (Math.log(spot / strike) + 0.5 * iv * iv * T) / (iv * sqrtT);
+  const d2 = d1 - iv * sqrtT;
+  return -phi(d1) * d2 / (2 * T);
+}

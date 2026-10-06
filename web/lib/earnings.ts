@@ -1,12 +1,19 @@
-// Estimador del próximo reporte de resultados.
+// Calendario de earnings — desde TASTYTRADE.
 //
-// El plan de Massive NO trae calendario de earnings (verificado: /benzinga/v1/earnings
-// da 403, /v1/reference/earnings da 404). Se usan DOS proxies y la UI declara que
-// es estimación:
-//   1. Cadencia de filing_date de /vX/reference/financials (~91 días entre reportes).
-//   2. El skew del frente que ivcontext ya calcula (>+10 pts = evento inminente).
+// Antes esto era un ESTIMADOR sobre Massive: el plan no traía calendario, así que
+// se proyectaba el próximo reporte a ~91 días del último `filing_date` de
+// `/vX/reference/financials`. Con Massive fuera (directiva del dueño) y con
+// Tastytrade sirviendo `earnings.expected-report-date` en `/market-metrics`, ya no
+// hace falta estimar nada: se pide la fecha.
 //
-// La parte pura (estimateNextEarnings, earningsFlag) no toca red.
+// **Esto NO es cosmético.** El filtro de earnings del mandato de venta de prima no
+// admite excepciones, y con el plan de Massive cancelado `fetchFilingDates`
+// devolvía `[]` en silencio → `no_aplica` → el filtro llevaba meses INERTE, dejando
+// pasar tickers que reportaban dentro del vencimiento.
+//
+// La parte pura (`earningsFlag`, `earningsDeFecha`) no toca red.
+
+import { fetchMarketMetrics, tastytradeConfigured } from "./tastytrade";
 
 /**
  * Bandera de earnings de un vencimiento. VIVE AQUÍ, no en wheel.ts, porque este
@@ -15,30 +22,15 @@
  */
 export type EarningsFlag = "fuera" | "dentro" | "dentro_confirmado" | "no_aplica";
 
-const QUARTER_DAYS = 91;
-const DAY = 24 * 60 * 60 * 1000;
-
-function toDay(d: string | number): string {
-  return new Date(typeof d === "number" ? d : `${d}T00:00:00Z`).toISOString().slice(0, 10);
-}
+// ── Parte pura ──────────────────────────────────────────────────────────────
 
 /**
- * Estima la fecha del próximo reporte a partir de los filing_date pasados.
- * Toma el más reciente y avanza en saltos de ~91 días hasta pasar HOY.
+ * ¿Cae el reporte dentro del vencimiento?
+ *
+ * Asume que `nextEarnings` es una fecha FUTURA. Para una fecha que puede venir del
+ * pasado —como las de Tastytrade— usa `earningsDeFecha`, que aplica esa regla
+ * antes de llamar aquí.
  */
-export function estimateNextEarnings(filingDates: string[], now: Date): string | null {
-  const times = filingDates
-    .map((d) => new Date(`${d}T00:00:00Z`).getTime())
-    .filter((t) => Number.isFinite(t))
-    .sort((a, b) => a - b);
-  if (times.length === 0) return null;
-
-  let next = times[times.length - 1];
-  const nowT = now.getTime();
-  while (next <= nowT) next += QUARTER_DAYS * DAY;
-  return toDay(next);
-}
-
 export function earningsFlag(input: {
   nextEarnings: string | null;
   expiration: string;
@@ -53,45 +45,118 @@ export function earningsFlag(input: {
   return (input.frontSkew ?? 0) > 10 ? "dentro_confirmado" : "dentro";
 }
 
-// ── Fetch (I/O — no se testea) ─────────────────────────────────────────
-
-interface FinancialsResult {
-  results?: { filing_date?: string }[];
+/**
+ * Bandera a partir de la fecha CRUDA de Tastytrade.
+ *
+ * **La fecha de Tastytrade puede ser la del ÚLTIMO reporte, no la del próximo.**
+ * Medido el 2026-09-07: GOOGL 22-jul, META y MSFT 29-jul, NVDA 26-ago, todas
+ * pasadas. Como cualquier fecha pasada es anterior al vencimiento, `earningsFlag`
+ * las leía como "dentro" y bloqueaba el ticker por un reporte de hacía semanas —
+ * en la pestaña de scalping eso fue **cuatro de los seis rojos de ese día**.
+ *
+ * Una fecha pasada significa "ya reportó", y el siguiente está a un trimestre:
+ * para un vencimiento de esta semana, eso es **fuera**.
+ */
+export function earningsDeFecha(
+  reportado: string | null,
+  expiracion: string,
+  hoy: string,
+): EarningsFlag {
+  if (!reportado) return "no_aplica";
+  if (reportado < hoy) return "fuera";
+  return earningsFlag({ nextEarnings: reportado, expiration: expiracion, frontSkew: null });
 }
 
-/** Fechas de reporte pasadas de un ticker. Devuelve [] si el ticker no reporta (ETF). */
-export async function fetchFilingDates(ticker: string): Promise<string[]> {
-  const key = process.env.MASSIVE_API_KEY;
-  if (!key) return [];
+// ── Fetch (I/O — no se testea) ─────────────────────────────────────────────
+
+/**
+ * Cache de fechas de reporte.
+ *
+ * Una fecha de earnings se mueve una vez por trimestre, así que 12 h es
+ * conservador de sobra y evita que un escaneo de 102 símbolos vuelva a pedir lo
+ * mismo en la pasada siguiente. `null` (el ticker no reporta, o Tastytrade no lo
+ * cubre) también se cachea: sin eso, los ETFs del universo repreguntarían en cada
+ * pasada — el mismo cache negativo que hizo falta en `marketCapStore`.
+ *
+ * En `globalThis` porque Next recarga módulos en desarrollo.
+ */
+const TTL_MS = 12 * 60 * 60 * 1000;
+
+interface Entrada { at: number; date: string | null }
+const cache: Map<string, Entrada> =
+  (globalThis as { __earningsCache?: Map<string, Entrada> }).__earningsCache ??
+  ((globalThis as { __earningsCache?: Map<string, Entrada> }).__earningsCache = new Map());
+
+function vigente(k: string, now: number): Entrada | null {
+  const e = cache.get(k);
+  return e && now - e.at < TTL_MS ? e : null;
+}
+
+/**
+ * Pide en UNA llamada las fechas de muchos símbolos y llena el cache.
+ *
+ * `/market-metrics` acepta la lista entera, así que el escaneo de venta de prima
+ * (102 símbolos) pasa de 102 peticiones a 1. Llamar a esto antes del bucle es
+ * opcional: sin él, `earningsForTicker` funciona igual, solo que de uno en uno.
+ */
+export async function prefetchEarningsDates(symbols: string[], now = Date.now()): Promise<void> {
+  if (!tastytradeConfigured()) return;
+  const faltan = [...new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean))]
+    .filter((s) => !vigente(s, now));
+  if (faltan.length === 0) return;
+
+  try {
+    const metricas = await fetchMarketMetrics(faltan);
+    const porSimbolo = new Map(metricas.map((m) => [m.symbol.toUpperCase(), m.earningsDate ?? null]));
+    // Se apuntan TODOS los pedidos, no solo los que volvieron: un símbolo que
+    // Tastytrade no cubre es un `null` legítimo, y no cachearlo lo convierte en
+    // una petición perdida en cada pasada.
+    for (const s of faltan) cache.set(s, { at: now, date: porSimbolo.get(s) ?? null });
+  } catch {
+    // Best-effort: si falla, cada ticker lo intentará por su cuenta y, si tampoco,
+    // la bandera sale "no_aplica" y quien la consume ya avisa de que no se sabe.
+  }
+}
+
+/** Fecha de reporte de un ticker (cacheada). `null` si no reporta o no se sabe. */
+export async function fetchEarningsDate(ticker: string, now = Date.now()): Promise<string | null> {
   const clean = ticker.trim().toUpperCase();
-  const url =
-    `https://api.massive.com/vX/reference/financials?ticker=${encodeURIComponent(clean)}` +
-    `&timeframe=quarterly&limit=6&order=desc&sort=filing_date`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${key}` }, cache: "no-store" })
-    .catch(() => null);
-  if (!res || !res.ok) return [];
-  const json = (await res.json().catch(() => null)) as FinancialsResult | null;
-  return (json?.results ?? [])
-    .map((r) => r.filing_date)
-    .filter((d): d is string => Boolean(d));
+  if (!clean) return null;
+  const ya = vigente(clean, now);
+  if (ya) return ya.date;
+  if (!tastytradeConfigured()) return null;
+
+  try {
+    const m = await fetchMarketMetrics([clean]);
+    const date = m.find((x) => x.symbol.toUpperCase() === clean)?.earningsDate ?? null;
+    cache.set(clean, { at: now, date });
+    return date;
+  } catch {
+    return null;
+  }
 }
 
-// NOTA (limitación declarada): el escaneo Wheel real (app/api/wheel/route.ts)
-// siempre llama a esta función con frontSkew: null, porque ese escaneo no
-// calcula ivContextScore por ticker (no tiene el flujo de MarketSnack por
-// símbolo). En consecuencia, HOY "dentro_confirmado" es INALCANZABLE en
-// producción: el flag efectivo es únicamente la cadencia de filing_date (el
-// "doble proxy" descrito arriba es, en la práctica, un proxy único). El
-// parámetro frontSkew se conserva para el día en que el skew esté disponible
-// en el escaneo Wheel; los tests unitarios de este módulo sí lo ejercitan
-// pasando un valor > 10 a propósito, y eso está bien.
+/**
+ * Bandera de earnings de un ticker sobre un vencimiento.
+ *
+ * NOTA (limitación declarada): `frontSkew` se conserva en la firma porque
+ * `dentro_confirmado` lo necesita, pero los escaneos que llaman aquí no calculan
+ * el skew del frente y pasan `null`. En la práctica el flag efectivo es
+ * fuera/dentro/no_aplica.
+ */
 export async function earningsForTicker(input: {
   ticker: string;
   expiration: string;
   frontSkew: number | null;
   now: Date;
 }): Promise<EarningsFlag> {
-  const filings = await fetchFilingDates(input.ticker);
-  const nextEarnings = estimateNextEarnings(filings, input.now);
-  return earningsFlag({ nextEarnings, expiration: input.expiration, frontSkew: input.frontSkew });
+  const date = await fetchEarningsDate(input.ticker, input.now.getTime());
+  const hoy = input.now.toISOString().slice(0, 10);
+  if (!date) return "no_aplica";
+  if (date < hoy) return "fuera";
+  return earningsFlag({
+    nextEarnings: date,
+    expiration: input.expiration,
+    frontSkew: input.frontSkew,
+  });
 }

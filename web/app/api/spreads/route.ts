@@ -30,7 +30,7 @@ import {
 import { cachedDailyBars } from "@/lib/barsStore";
 import { avg20dVolume } from "@/lib/volume";
 import { findLevels } from "@/lib/levels";
-import { earningsForTicker } from "@/lib/earnings";
+import { earningsForTicker, prefetchEarningsDates } from "@/lib/earnings";
 import {
   cachedMacroCalendar,
   macroEventsInWindow,
@@ -292,6 +292,10 @@ export async function GET(req: Request) {
         // IV Rank REAL de Tastytrade para todo el universo en una tanda. Vacío si
         // no está configurado → cada ticker cae a su proxy de vol realizada.
         const ivRankMap = await fetchIvRankMap(SPREAD_UNIVERSE.map((s) => s.ticker));
+        // Las fechas de earnings, en la MISMA tanda: `/market-metrics` acepta el
+        // universo entero, así que esto convierte 102 peticiones en 1. Sin la
+        // llamada el escaneo funciona igual, solo que de uno en uno.
+        await prefetchEarningsDates(SPREAD_UNIVERSE.map((s) => s.ticker), now.getTime());
         if (ivRankMap.size > 0) {
           send({ type: "step", label: `IV Rank real de Tastytrade para ${ivRankMap.size} tickers` });
         }

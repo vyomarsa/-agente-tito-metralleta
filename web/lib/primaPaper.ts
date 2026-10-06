@@ -17,6 +17,7 @@
 // ============================================================================
 
 import type { SpreadCandidate } from "./creditSpread";
+import { commissionOf } from "./commissions";
 
 // ---------------------------------------------------------------------------
 // Constantes del plan
@@ -126,8 +127,37 @@ export interface PrimaPosition {
   status: PrimaStatus;
   closedAt: string | null;
   closeReason: string | null;
-  /** PnL realizado en $ (solo al cerrar). */
+  /** PnL realizado en $ (solo al cerrar), BRUTO: sin comisiones. */
   realizedPnl: number | null;
+  /**
+   * Comisiones cobradas en $. Se guarda al cerrar desde el 2026-09-17; en las
+   * anteriores se DERIVA con `feesOf`.
+   */
+  fees?: number;
+}
+
+/**
+ * ¿Se cerró DESPUÉS de vencer? Entonces no hubo orden de cierre: la vertical se
+ * liquidó sola. Se decide por calendario y no leyendo `closeReason`, que es texto
+ * libre (mismo criterio que `primaExpirada` de las alertas).
+ */
+function cerroVencida(p: Pick<PrimaPosition, "expiration" | "closedAt">): boolean {
+  return p.closedAt != null && dteOn(p.expiration, new Date(p.closedAt)) < 0;
+}
+
+/**
+ * Comisiones de la posición. Un credit spread son DOS patas por orden: se paga al
+ * abrir y, salvo que venza, al cerrar. Abierta = solo la apertura, ya pagada.
+ */
+export function feesOf(p: Pick<PrimaPosition, "contracts" | "status" | "expiration" | "closedAt" | "fees">): number {
+  if (p.fees != null) return p.fees;
+  const huboCierre = p.status !== "abierta" && !cerroVencida(p);
+  return commissionOf(p.contracts, 2, huboCierre);
+}
+
+/** P&L NETO de una cerrada: el bruto menos las comisiones. */
+export function netPnlOf(p: PrimaPosition): number {
+  return Math.round(((p.realizedPnl ?? 0) - feesOf(p)) * 100) / 100;
 }
 
 /** Riesgo máximo por contrato en $: (ancho − crédito) × 100. */
@@ -442,15 +472,51 @@ export function managePosition(p: PrimaPosition, day: Date): ManageDecision {
   return { action: "mantener", reason: `Dentro de parámetros (DTE=${dte}, ${Math.round(ganancia * 100)}% capturado).` };
 }
 
+/**
+ * Valor de la vertical AL VENCIMIENTO, por intrínseco puro.
+ *
+ * Es la ÚNICA excepción legítima a "sin cotización no se pone precio": aquí el
+ * precio no se estima, se DEDUCE — a vencimiento una opción vale su intrínseco y
+ * nada más. La misma salida que ya usa la bitácora de swing para lo vencido.
+ *
+ * Hacía falta porque una posición vencida **no se puede re-cotizar**: su cadena ya
+ * no existe, así que `repriceFromChain` devolvía null, el gestor la dejaba "sin
+ * evaluar" y la posición se quedaba abierta para siempre. Medido el 2026-09-07:
+ * tres spreads llevaban 7 y 10 días vencidos y seguían contados como abiertos,
+ * con lo que el capital de la cuenta no significaba nada.
+ *
+ * `settleUnderlying` tiene que ser el cierre del **día del vencimiento**, no el
+ * precio de hoy: entre medias el subyacente se mueve, y liquidar con el día
+ * equivocado puede voltear el signo de una posición ajustada.
+ */
+export function valorAlVencimiento(
+  p: Pick<PrimaPosition, "type" | "shortStrike" | "longStrike" | "width">,
+  settleUnderlying: number,
+): number {
+  const s = settleUnderlying;
+  const bruto = p.type === "put_credit"
+    ? Math.max(0, p.shortStrike - s) - Math.max(0, p.longStrike - s)
+    : Math.max(0, s - p.shortStrike) - Math.max(0, s - p.longStrike);
+  // Acotado a [0, ancho]: una vertical no puede valer menos que cero ni más que
+  // su ancho, y así un strike mal guardado no inventa una pérdida imposible.
+  return Math.min(p.width, Math.max(0, bruto));
+}
+
 /** Sella el cierre en la posición. Devuelve una copia cerrada. */
 export function closePosition(p: PrimaPosition, reason: string, day: Date): PrimaPosition {
   const pnl = pnlOf(p);
+  // Venció = no hay orden de cierre que pagar. Mismo criterio que `managePosition`.
+  const fees = commissionOf(p.contracts, 2, dteOn(p.expiration, day) >= 0);
+  // Ganada/perdida por el NETO: +$12 que pagan $5,20 de comisiones siguen siendo
+  // ganancia, pero un +$2 que paga $5,20 es una pérdida en la cuenta real.
+  const neto = pnl - fees;
   return {
     ...p,
-    status: pnl > 0 ? "ganada" : pnl < 0 ? "perdida" : "neutra",
+    status: neto > 0 ? "ganada" : neto < 0 ? "perdida" : "neutra",
     closedAt: day.toISOString(),
     closeReason: reason,
     realizedPnl: pnl,
+    fees,
     peakProfitPct: Math.max(p.peakProfitPct, profitPct(p)),
   };
 }
@@ -469,7 +535,12 @@ export function reprice(p: PrimaPosition, currentValue: number, shortDelta?: num
 
 export interface PrimaSummary {
   startEquity: number;
+  /** P&L cerrado NETO de comisiones (desde el 2026-09-17; antes era bruto). */
   realizedPnl: number;
+  /** El mismo P&L sin comisiones, para ver cuánto se llevan. */
+  grossPnl: number;
+  /** Comisiones de las cerradas + la apertura de las abiertas. */
+  feesPaid: number;
   equity: number;
   returnPct: number;
   trades: number;
@@ -479,6 +550,7 @@ export interface PrimaSummary {
   /** null (no 0) mientras no haya operaciones decididas. */
   winRate: number | null;
   openCount: number;
+  /** Latente de las abiertas, descontada la comisión de apertura ya pagada. */
   unrealizedPnl: number;
   committed: number;
   equityCurve: number[];
@@ -491,27 +563,33 @@ export function summarize(
   open: PrimaPosition[],
   startEquity = START_EQUITY,
 ): PrimaSummary {
-  const realized = r2(closed.reduce((s, p) => s + (p.realizedPnl ?? 0), 0));
+  const realized = r2(closed.reduce((s, p) => s + netPnlOf(p), 0));
+  const gross = r2(closed.reduce((s, p) => s + (p.realizedPnl ?? 0), 0));
   const curve: number[] = [r2(startEquity)];
   let acc = startEquity;
-  for (const p of closed) { acc += p.realizedPnl ?? 0; curve.push(r2(acc)); }
+  for (const p of closed) { acc += netPnlOf(p); curve.push(r2(acc)); }
 
-  const wins = closed.filter((p) => p.status === "ganada").length;
-  const losses = closed.filter((p) => p.status === "perdida").length;
-  const neutral = closed.filter((p) => p.status === "neutra").length;
+  // Por el signo del NETO, también en las filas anteriores a las comisiones: su
+  // `status` se selló con el bruto y no dice lo que pasó en una cuenta real.
+  const wins = closed.filter((p) => netPnlOf(p) > 0).length;
+  const losses = closed.filter((p) => netPnlOf(p) < 0).length;
+  const neutral = closed.length - wins - losses;
   const decided = wins + losses;
 
   const vivas = open.filter((p) => p.status === "abierta");
+  const openFees = vivas.reduce((s, p) => s + feesOf(p), 0);
   return {
     startEquity: r2(startEquity),
     realizedPnl: realized,
+    grossPnl: gross,
+    feesPaid: r2(closed.reduce((s, p) => s + feesOf(p), 0) + openFees),
     equity: r2(startEquity + realized),
     returnPct: startEquity ? Math.round((realized / startEquity) * 10000) / 100 : 0,
     trades: closed.length,
     wins, losses, neutral,
     winRate: decided > 0 ? Math.round((wins / decided) * 1000) / 10 : null,
     openCount: vivas.length,
-    unrealizedPnl: r2(vivas.reduce((s, p) => s + pnlOf(p), 0)),
+    unrealizedPnl: r2(vivas.reduce((s, p) => s + pnlOf(p), 0) - openFees),
     committed: r2(vivas.reduce((s, p) => s + maxRiskOf(p) * p.contracts, 0)),
     equityCurve: curve,
   };

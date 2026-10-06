@@ -10,13 +10,14 @@
 // empresa y las barras salen de sus almacenes en disco.
 
 import { toRow, sortByOpenInterestDesc } from "@/lib/compute";
+import { fetchTickerFlow } from "@/lib/flowSources";
 import { structureScore } from "@/lib/structure";
 import { MassiveError } from "@/lib/massive";
 import { cachedCompany } from "@/lib/companyStore";
 import { cachedDailyBars, loadBars, saveBars } from "@/lib/barsStore";
 import { marketDateStr } from "@/lib/occ";
 import { fetchChainFromTastytrade } from "@/lib/chainSources";
-import { fetchFlow, fetchExpirations, fetchOptionChain2 } from "@/lib/marketsnack";
+import { fetchExpirations, fetchOptionChain2 } from "@/lib/marketsnack";
 import { marketsnackConfigured } from "@/lib/marketsnackCookie";
 import { normalizeChain2, nearestExpirations, realGreeksMap } from "@/lib/optionChain2";
 import { estimateSpotFromChain } from "@/lib/zerodte";
@@ -291,18 +292,19 @@ export async function GET(request: Request) {
             : loadRealGreeks(ticker, new Date());
         const ivRankPromise = fetchIvRankMap([ticker]).then((m) => m.get(ticker) ?? null);
 
-        // 2. Flujo real (MarketSnack) → scores + trades para el GEX.
+        // 2. Flujo real (Tastytrade → MarketSnack) → scores + trades para el GEX.
         send({ type: "step", label: `Leyendo flujo institucional de ${ticker}…` });
         let interesting: FlowRow[] = [];
         try {
-          const { trades } = await fetchFlow(ticker, {
+          const { trades } = await fetchTickerFlow(ticker, {
             period: "5d",
+            days: 5,
             minPremium: FLOW_MIN_PREMIUM,
             maxPages: FLOW_MAX_PAGES,
           });
           interesting = classifyFlow(trades, new Date()).interesting;
         } catch {
-          // sin cookie / fallo de MarketSnack → seguimos con GEX estimado y sin tape
+          // sin ninguna de las dos fuentes → seguimos con GEX estimado y sin tape
         }
 
         const aggression = interesting.length ? aggressionScore(interesting).score : null;

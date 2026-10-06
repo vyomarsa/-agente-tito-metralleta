@@ -145,6 +145,11 @@ async function main() {
     (cierres ? ` · CIERRES: ${cierres}` : "") +
     (body.blocked && body.opened === 0 ? ` · no abre: ${body.blocked}` : "");
 
+  // Las notas del tick (p. ej. una vencida de OTRO ticker que se acaba de liquidar)
+  // se registran SIEMPRE: son justo lo que nadie estaba viendo, porque el cron solo
+  // escanea SPY y esas posiciones no salían en ningún sitio.
+  for (const n of body.notes ?? []) log(`NOTA   ${n}`);
+
   if (cierres || body.opened > 0) log(`OK     ${TICKER} — ${resumen}`);
 
   // Cierre de sesión: recuento del día. Con esto, mirar la bitácora contesta

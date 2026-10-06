@@ -408,3 +408,159 @@ export function dxlinkUnderlyings(opts: {
     });
   });
 }
+
+// ---------------------------------------------------------------------------
+// TIME & SALES de opciones (evento TimeAndSale de dxFeed)
+// ---------------------------------------------------------------------------
+
+// `type` distingue NEW de CORRECTION/CANCEL: una cancelada no puede contar como
+// flujo. `spreadLeg` dice si la operación es una pata de una estrategia de varias
+// patas — es lo que en MarketSnack venía como condición OPRA multi-leg.
+const TNS_FIELDS = [
+  "eventType", "eventSymbol", "time", "sequence", "price", "size",
+  "bidPrice", "askPrice", "aggressorSide", "spreadLeg", "type", "exchangeCode",
+];
+
+/** Una operación impresa en la cinta, tal cual la entrega dxFeed. */
+export interface DxPrint {
+  /** Símbolo del STREAMER (`.SPY260917C760`), no el OCC. */
+  symbol: string;
+  time: number; // epoch ms
+  sequence: number;
+  price: number;
+  size: number;
+  bid: number | null;
+  ask: number | null;
+  /** Quién cruzó: "BUY" (pagó el ask) / "SELL" (golpeó el bid) / "UNDEFINED". */
+  aggressor: string;
+  /** true = pata de una estrategia de varias patas. */
+  spreadLeg: boolean;
+  exchange: string;
+}
+
+interface TnsOpts {
+  url: string;
+  token: string;
+  /** Símbolos del streamer a escuchar. */
+  symbols: string[];
+  /** Desde cuándo se quiere el histórico (epoch ms). */
+  fromTime: number;
+  timeoutMs?: number;
+  quietMs?: number;
+}
+
+/**
+ * Snapshot del Time & Sales de varios contratos.
+ *
+ * LÍMITES DE LA FUENTE, medidos el 2026-09-17 y que condicionan a quien llame:
+ *  · dxFeed devuelve como mucho **~1.000 impresiones por símbolo** y son las MÁS
+ *    RECIENTES: en un strike muy activo el histórico se corta antes de `fromTime`.
+ *  · El histórico llega **~5 sesiones** atrás; pedir 900 h no trae más. Lo que haga
+ *    falta más allá (Convicción mira 30 días) tiene que acumularse en disco.
+ *
+ * Coste medido: SPY con los 952 contratos de 2 vencimientos → 188.687 impresiones
+ * en 5,6 s. Por eso se cierra por silencio y se suscribe en tandas, igual que el
+ * snapshot de la cadena.
+ */
+export function dxlinkTimeAndSale(opts: TnsOpts): Promise<DxPrint[]> {
+  const { url, token, symbols, fromTime } = opts;
+  const timeoutMs = opts.timeoutMs ?? 30_000;
+  const quietMs = opts.quietMs ?? 1500;
+
+  return new Promise((resolve) => {
+    const out: DxPrint[] = [];
+    if (symbols.length === 0) return resolve(out);
+
+    const ws = new WebSocket(url);
+    let ka: ReturnType<typeof setInterval> | null = null;
+    let hard: ReturnType<typeof setTimeout> | null = null;
+    let quiet: ReturnType<typeof setTimeout> | null = null;
+    let done = false;
+    let subscribed = false;
+
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (ka) clearInterval(ka);
+      if (hard) clearTimeout(hard);
+      if (quiet) clearTimeout(quiet);
+      try { ws.close(); } catch { /* ya cerrado */ }
+      out.sort((a, b) => a.time - b.time);
+      resolve(out);
+    };
+    const bumpQuiet = () => {
+      if (quiet) clearTimeout(quiet);
+      quiet = setTimeout(() => { if (out.length > 0) finish(); }, quietMs);
+    };
+
+    hard = setTimeout(finish, timeoutMs);
+    const send = (o: unknown) => { try { ws.send(JSON.stringify(o)); } catch { /* cerrando */ } };
+
+    ws.addEventListener("error", finish);
+    ws.addEventListener("close", finish);
+    ws.addEventListener("open", () => {
+      send({ type: "SETUP", channel: 0, version: "0.1-tito", keepaliveTimeout: 60, acceptKeepaliveTimeout: 60 });
+      ka = setInterval(() => send({ type: "KEEPALIVE", channel: 0 }), 20_000);
+    });
+
+    ws.addEventListener("message", (ev: MessageEvent) => {
+      let m: { type?: string; state?: string; data?: unknown[] };
+      try { m = JSON.parse(String(ev.data)); } catch { return; }
+
+      if (m.type === "AUTH_STATE" && m.state === "UNAUTHORIZED") {
+        send({ type: "AUTH", channel: 0, token });
+      } else if (m.type === "AUTH_STATE" && m.state === "AUTHORIZED") {
+        send({ type: "CHANNEL_REQUEST", channel: 1, service: "FEED", parameters: { contract: "AUTO" } });
+      } else if (m.type === "CHANNEL_OPENED") {
+        send({
+          type: "FEED_SETUP", channel: 1, acceptAggregationPeriod: 1,
+          acceptDataFormat: "COMPACT", acceptEventFields: { TimeAndSale: TNS_FIELDS },
+        });
+      } else if (m.type === "FEED_CONFIG" && !subscribed) {
+        subscribed = true; // llegan varios FEED_CONFIG; suscribir UNA sola vez
+        const CHUNK = 250; // mismo régimen que la cadena: un `add` de miles no vuelve
+        for (let i = 0; i < symbols.length; i += CHUNK) {
+          send({
+            type: "FEED_SUBSCRIPTION", channel: 1,
+            add: symbols.slice(i, i + CHUNK).map((s) => ({ type: "TimeAndSale", symbol: s, fromTime })),
+          });
+        }
+      } else if (m.type === "FEED_DATA") {
+        const data = m.data;
+        if (!Array.isArray(data)) return;
+        const n = TNS_FIELDS.length;
+        for (let i = 0; i + 1 < data.length; i += 2) {
+          if (data[i] !== "TimeAndSale") continue;
+          const vals = data[i + 1] as unknown[];
+          if (!Array.isArray(vals)) continue;
+          for (let k = 0; k + n <= vals.length; k += n) {
+            const num = (x: unknown): number => (typeof x === "number" ? x : Number(x));
+            const pos = (x: unknown): number | null => {
+              const v = num(x);
+              return Number.isFinite(v) && v > 0 ? v : null;
+            };
+            // Solo impresiones NUEVAS: una corrección o una cancelación no es flujo.
+            if (String(vals[k + 10]) !== "NEW") continue;
+            const time = num(vals[k + 2]);
+            const price = num(vals[k + 4]);
+            const size = num(vals[k + 5]);
+            if (!Number.isFinite(time) || !(price > 0) || !(size > 0)) continue;
+            out.push({
+              symbol: String(vals[k + 1]),
+              time,
+              sequence: num(vals[k + 3]),
+              price,
+              size,
+              bid: pos(vals[k + 6]),
+              ask: pos(vals[k + 7]),
+              aggressor: String(vals[k + 8] ?? "UNDEFINED"),
+              spreadLeg: vals[k + 9] === true || String(vals[k + 9]) === "true",
+              exchange: String(vals[k + 11] ?? ""),
+            });
+          }
+        }
+        bumpQuiet();
+      }
+    });
+  });
+}

@@ -13,6 +13,7 @@ import {
   swingCandidate,
   intradayCandidate,
   selectCandidates,
+  quoteSymbolFor,
   DEFAULT_CONTRACTS,
   type Candidate,
   type SwingSignal,
@@ -20,7 +21,7 @@ import {
 } from "@/lib/autopilot";
 import { loadPaperTrades, savePaperTrades } from "@/lib/paperTradeStore";
 import { isOpen, type PaperTrade } from "@/lib/paperTrade";
-import { fetchMarketFlow } from "@/lib/marketsnack";
+import { fetchMarketFlowCascade } from "@/lib/marketFlow";
 import { marketsnackConfigured } from "@/lib/marketsnackCookie";
 import { classifyFlow, type FlowRow } from "@/lib/flow";
 import { isTradeableIdea, withinMoneyness } from "@/lib/risk";
@@ -31,6 +32,7 @@ import { cachedDailyBars } from "@/lib/barsStore";
 import { validationScore, type FlowLite } from "@/lib/validation";
 import { loadTrades } from "@/lib/store";
 import type { Row } from "@/lib/types";
+import { fetchQuoteToken, fetchTastytradeQuotes, tastytradeConfigured } from "@/lib/tastytrade";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -82,7 +84,10 @@ function toFlowLite(t: FlowRow): FlowLite {
 
 // --- Vía SWING: flujo inusual + acierto histórico -------------------------
 async function scanSwing(now: Date): Promise<{ candidates: Candidate[]; considered: number }> {
-  const { trades } = await fetchMarketFlow({ period: "1d", minPremium: SWING_MIN_PREMIUM, maxPages: SWING_MAX_PAGES });
+  // Universo barrido (Tastytrade) → MarketSnack. Ver lib/marketFlow.
+  const { trades } = await fetchMarketFlowCascade({
+    period: "1d", days: 1, minPremium: SWING_MIN_PREMIUM, maxPages: SWING_MAX_PAGES,
+  });
   const { rows } = classifyFlow(trades, now);
   const tradeable = dedupeByContract(rows.filter((r) => isTradeableIdea(r) && withinMoneyness(r)))
     .filter((r) => r.strike != null && r.expiration != null && (r.type === "call" || r.type === "put"))
@@ -226,7 +231,48 @@ export async function POST() {
   });
 
   const all = [...intraday.candidates, ...swing.candidates];
-  const selected = selectCandidates(all, { blockedTickers }).slice(0, MAX_OPEN_PER_SCAN);
+
+  /**
+   * Se descarta lo que NO SE PUEDE COTIZAR, antes de repartir los cupos del escaneo.
+   *
+   * `evaluate` necesita el precio del subyacente para cruzar el gatillo: un plan sobre
+   * un símbolo que nadie cotiza no puede activarse **nunca**, y mientras tanto reserva
+   * su ticker siete días por la regla de "una entrada por ticker". El flujo de
+   * MarketSnack entrega como `underlying` la RAÍZ DE LA OPCIÓN en las semanales de
+   * índice (`SPXW`, `NDXP`, `RUTW`…), que no son tickers cotizables. `quoteSymbolFor`
+   * traduce las que tienen equivalente bueno; esta comprobación es la red que atrapa el
+   * resto — `RUTW` es el caso claro, porque su propio `RUT` tampoco cotiza.
+   *
+   * Se hace con UNA conexión de streamer para todos los símbolos, así que cuesta lo
+   * mismo mirar 3 que 40. Si Tastytrade no está configurado no se filtra nada: preferir
+   * un plan de más a bloquear el piloto entero por no poder comprobar.
+   */
+  const sinCotizacion: string[] = [];
+  let candidatos = all;
+  if (tastytradeConfigured() && all.length > 0) {
+    try {
+      const token = await fetchQuoteToken();
+      const simbolos = [...new Set(all.map((c) => quoteSymbolFor(c.ticker)))];
+      const quotes = await fetchTastytradeQuotes(simbolos, { quoteToken: token });
+      const cotizan = new Set(
+        [...quotes].filter(([, q]) => q.price != null).map(([sym]) => sym),
+      );
+      candidatos = all.filter((c) => {
+        if (cotizan.has(quoteSymbolFor(c.ticker))) return true;
+        sinCotizacion.push(c.ticker);
+        return false;
+      });
+    } catch {
+      // Sin poder comprobar, no se filtra: ver el comentario de arriba.
+    }
+  }
+  if (sinCotizacion.length > 0) {
+    warnings.push(
+      `Sin cotización del subyacente → descartados ${sinCotizacion.length}: ${[...new Set(sinCotizacion)].join(", ")}.`,
+    );
+  }
+
+  const selected = selectCandidates(candidatos, { blockedTickers }).slice(0, MAX_OPEN_PER_SCAN);
 
   const opened: PaperTrade[] = selected.map((c) => candidateToTrade(c, now));
   if (opened.length > 0) {

@@ -181,8 +181,11 @@ export default function TastytradePage() {
               <table style={table}>
                 <thead>
                   <tr>
-                    {["Símbolo", "IV Rank", "IV %ile", "IV Index", "Liquidez", "Beta", "Earnings"].map((h) => (
-                      <th key={h} style={th}>{h}</th>
+                    {["Símbolo", "IV Rank", "IV %ile", "IV Index", "Liquidez", "Beta", "Earnings"].map((h, i) => (
+                      // La primera columna lleva texto (el símbolo) y va a la
+                      // izquierda: su cabecera tiene que ir igual o el nombre queda
+                      // en un borde y el dato en el otro.
+                      <th key={h} style={i === 0 ? thIzq : th}>{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -237,8 +240,8 @@ export default function TastytradePage() {
                   <table style={table}>
                     <thead>
                       <tr>
-                        {["Contrato", "Bid", "Ask", "Δ", "Γ", "IV%", "OI"].map((h) => (
-                          <th key={h} style={th}>{h}</th>
+                        {["Contrato", "Bid", "Ask", "Δ", "Γ", "IV%", "OI"].map((h, i) => (
+                          <th key={h} style={i === 0 ? thIzq : th}>{h}</th>
                         ))}
                       </tr>
                     </thead>
@@ -310,6 +313,7 @@ const th: React.CSSProperties = {
   color: "var(--muted)",
   whiteSpace: "nowrap",
 };
+const thIzq: React.CSSProperties = { ...th, textAlign: "left" };
 const td: React.CSSProperties = {
   textAlign: "right",
   padding: "0.35rem 0.5rem",

@@ -420,16 +420,21 @@ interface QuoteTokenResponse {
 
 interface NestedStrike {
   "strike-price"?: string;
+  /** Símbolo OCC con relleno de espacios ("SPXW  260917C07445000"). */
+  call?: string;
+  put?: string;
   "call-streamer-symbol"?: string;
   "put-streamer-symbol"?: string;
 }
 interface NestedExpiration {
   "expiration-date"?: string; // YYYY-MM-DD
   "days-to-expiration"?: number;
+  /** "AM" | "PM". SPX trae las dos para el mismo día (ver `pickExpirations`). */
+  "settlement-type"?: string;
   strikes?: NestedStrike[];
 }
 interface NestedChainResponse {
-  data?: { items?: Array<{ expirations?: NestedExpiration[] }> };
+  data?: { items?: Array<{ "root-symbol"?: string; expirations?: NestedExpiration[] }> };
 }
 
 /** Greek real por contrato, misma forma que realGreeksMap/schwab (iv en DECIMAL). */
@@ -456,10 +461,87 @@ export interface TtContract {
   openInterest: number;
   volume: number; // volumen del día
   last: number | null; // último precio operado
+  /** Símbolo OCC compacto ("SPY260917C00761000"), el mismo formato que MarketSnack. */
+  symbol?: string;
+  theta?: number | null;
+  vega?: number | null;
 }
 
-interface SymMeta { strike: number; expiration: string; type: "call" | "put"; dte: number }
-interface ChainFilter { expirations?: number; dteMin?: number; dteMax?: number }
+interface SymMeta { strike: number; expiration: string; type: "call" | "put"; dte: number; occ: string }
+interface ChainFilter {
+  expirations?: number; dteMin?: number; dteMax?: number;
+  /** Vencimientos EXACTOS (YYYY-MM-DD). Manda sobre los otros filtros. */
+  dates?: string[];
+}
+
+/**
+ * Un vencimiento por fecha, fusionando TODAS las raíces del nested.
+ *
+ * `streamChain` leía solo `items[0]`, y en SPX eso depende del orden en que
+ * Tastytrade liste las raíces: hay dos, `SPXW` (diarias, liquidación PM) y `SPX`
+ * (mensual, liquidación AM), y el tercer viernes las DOS tienen la misma fecha.
+ * Mezclarlas duplicaría cada strike de ese día en el GEX. Se queda la PM, que es
+ * la que cotiza hasta la campana y la que opera un 0DTE; a igualdad, la de más strikes.
+ * Verificado el 2026-09-17: SPXW 42 vencimientos, SPX 21, coinciden el 18-sep.
+ */
+function pickExpirations(items: NonNullable<NonNullable<NestedChainResponse["data"]>["items"]>): NestedExpiration[] {
+  const byDate = new Map<string, NestedExpiration>();
+  const rank = (e: NestedExpiration) =>
+    (e["settlement-type"] === "PM" ? 1_000_000 : 0) + (e.strikes?.length ?? 0);
+  for (const it of items) {
+    for (const e of it.expirations ?? []) {
+      const d = e["expiration-date"];
+      if (!d) continue;
+      const ya = byDate.get(d);
+      if (!ya || rank(e) > rank(ya)) byDate.set(d, e);
+    }
+  }
+  return [...byDate.values()].sort(
+    (a, b) => (a["days-to-expiration"] ?? 1e9) - (b["days-to-expiration"] ?? 1e9),
+  );
+}
+
+/**
+ * Estructura de la cadena con cache corto en memoria.
+ *
+ * El 0DTE la pide una vez por minuto durante toda la sesión, y la de SPX es la más
+ * pesada del REST (6–7 s medidos). Los strikes listados no cambian dentro de unos
+ * minutos; los PRECIOS no salen de aquí sino del streamer, así que el cache no
+ * envejece ninguna cotización. `days-to-expiration` sí cambia a medianoche, y 5 min
+ * de TTL lo deja pasar a tiempo. Single-flight: dos escaneos a la vez comparten la llamada.
+ */
+const NESTED_TTL_MS = 5 * 60_000;
+type NestedEntry = { at: number; p: Promise<NestedExpiration[]> };
+const nestedCache: Map<string, NestedEntry> =
+  (globalThis as { __ttNested?: Map<string, NestedEntry> }).__ttNested ??
+  ((globalThis as { __ttNested?: Map<string, NestedEntry> }).__ttNested = new Map());
+
+function fetchNested(clean: string): Promise<NestedExpiration[]> {
+  const ya = nestedCache.get(clean);
+  if (ya && Date.now() - ya.at < NESTED_TTL_MS) return ya.p;
+  const p = getJson<NestedChainResponse>(`/option-chains/${encodeURIComponent(clean)}/nested`)
+    .then((r) => pickExpirations(r.data?.items ?? []));
+  nestedCache.set(clean, { at: Date.now(), p });
+  // Un fallo no se cachea: el siguiente intento vuelve a preguntar.
+  p.catch(() => { if (nestedCache.get(clean)?.p === p) nestedCache.delete(clean); });
+  return p;
+}
+
+/** "SPXW  260917C07445000" → "SPXW260917C07445000" (el formato de MarketSnack y de `occSymbol`). */
+function compactOcc(raw: string | undefined): string {
+  return (raw ?? "").replace(/\s+/g, "");
+}
+
+/**
+ * Vencimientos listados (fecha + DTE), sin abrir el streamer. Para el selector del
+ * 0DTE y para elegir el frente en el scalping. Lanza TastytradeError si falla.
+ */
+export async function fetchTastytradeExpirations(ticker: string): Promise<{ date: string; dte: number }[]> {
+  const clean = ticker.trim().toUpperCase();
+  if (!clean) return [];
+  const exps = await fetchNested(clean);
+  return exps.map((e) => ({ date: e["expiration-date"] as string, dte: e["days-to-expiration"] ?? 0 }));
+}
 
 /** Token + URL del streamer DXLink. Autoriza la conexión (NO es por ticker). */
 export interface QuoteToken { url: string; token: string }
@@ -500,16 +582,17 @@ async function streamChain(
   opts: { timeoutMs?: number; includeUnderlying?: boolean; preToken?: QuoteToken },
 ): Promise<{ meta: Map<string, SymMeta>; snap: Map<string, import("./tastytradeStream").DxFields>; underlying: string | null }> {
   // El token se reutiliza si viene pre-obtenido (escaneos); si no, se pide aquí.
-  const [tok, nested] = await Promise.all([
+  const [tok, allExps] = await Promise.all([
     opts.preToken ? Promise.resolve(opts.preToken) : fetchQuoteToken(),
-    getJson<NestedChainResponse>(`/option-chains/${encodeURIComponent(clean)}/nested`),
+    fetchNested(clean),
   ]);
   const { url, token } = tok;
 
-  let exps = (nested.data?.items?.[0]?.expirations ?? [])
-    .filter((e) => e["expiration-date"])
-    .sort((a, b) => (a["days-to-expiration"] ?? 1e9) - (b["days-to-expiration"] ?? 1e9));
-  if (filter.dteMin != null || filter.dteMax != null) {
+  let exps = allExps;
+  if (filter.dates && filter.dates.length > 0) {
+    const want = new Set(filter.dates);
+    exps = exps.filter((e) => want.has(e["expiration-date"] as string));
+  } else if (filter.dteMin != null || filter.dteMax != null) {
     exps = exps.filter((e) => {
       const d = e["days-to-expiration"] ?? -1;
       return (filter.dteMin == null || d >= filter.dteMin) && (filter.dteMax == null || d <= filter.dteMax);
@@ -525,8 +608,8 @@ async function streamChain(
     for (const s of e.strikes ?? []) {
       const strike = Number(s["strike-price"]);
       if (!Number.isFinite(strike)) continue;
-      if (s["call-streamer-symbol"]) meta.set(s["call-streamer-symbol"], { strike, expiration, type: "call", dte });
-      if (s["put-streamer-symbol"]) meta.set(s["put-streamer-symbol"], { strike, expiration, type: "put", dte });
+      if (s["call-streamer-symbol"]) meta.set(s["call-streamer-symbol"], { strike, expiration, type: "call", dte, occ: compactOcc(s.call) });
+      if (s["put-streamer-symbol"]) meta.set(s["put-streamer-symbol"], { strike, expiration, type: "put", dte, occ: compactOcc(s.put) });
     }
   }
   // Símbolo del subyacente en dxFeed = el ticker plano (equities/ETFs).
@@ -664,8 +747,16 @@ export async function fetchTastytradeQuotes(
 /** Periodo dxFeed por timeframe de la app. */
 const CANDLE_PERIOD: Record<string, string> = {
   "1y": "d",
+  // 1 minuto: lo pide el flujo para saber a qué precio cotizaba el subyacente en
+  // cada impresión de la cinta (ver lib/flowSources).
+  "1m": "1m",
   "15m10d": "15m",
   "5m5d": "5m",
+  // 4 horas como el 4H de TradingView: SOLO horario regular (`tho=true`) y
+  // alineadas a la sesión (`a=s`) → velas de 9:30 y 13:30 ET. Sin esos dos
+  // modificadores dxFeed corta cada 4 h desde medianoche e incluye extended
+  // hours, y la MA200 sale de otras velas (verificado 2026-10-05).
+  "4h": "4h,tho=true,a=s",
 };
 
 /**
@@ -702,18 +793,74 @@ export async function fetchTastytradeCandles(
   }));
 }
 
+/** Contrato de la cadena, con lo que el flujo necesita para rellenar cada impresión. */
+export interface TtFlowContract {
+  occ: string;
+  type: "call" | "put";
+  strike: number;
+  expiration: string;
+  dte: number;
+  delta: number | null;
+  gamma: number | null;
+  theta: number | null;
+  vega: number | null;
+  iv: number | null;
+  openInterest: number;
+  volume: number;
+}
+
+/**
+ * Cadena indexada por el símbolo del STREAMER (no el OCC), que es la clave con la
+ * que llegan las impresiones del Time & Sales. Es el mismo snapshot que
+ * `fetchTastytradeChain`: se expone aparte para no tener que rehacer el mapeo
+ * streamer→contrato en `lib/flowSources`.
+ */
+export async function streamChainForFlow(
+  ticker: string,
+  opts: { expirations?: number; dteMin?: number; dteMax?: number; quoteToken?: QuoteToken; timeoutMs?: number } = {},
+): Promise<{ contratos: Map<string, TtFlowContract> }> {
+  const clean = ticker.trim().toUpperCase();
+  const contratos = new Map<string, TtFlowContract>();
+  if (!clean) return { contratos };
+  const { meta, snap } = await streamChain(
+    clean,
+    { expirations: opts.expirations ?? 8, dteMin: opts.dteMin, dteMax: opts.dteMax },
+    { timeoutMs: opts.timeoutMs, preToken: opts.quoteToken },
+  );
+  for (const [sym, m] of meta) {
+    const f = snap.get(sym);
+    contratos.set(sym, {
+      occ: m.occ,
+      type: m.type,
+      strike: m.strike,
+      expiration: m.expiration,
+      dte: m.dte,
+      delta: f?.delta ?? null,
+      gamma: f?.gamma ?? null,
+      theta: f?.theta ?? null,
+      vega: f?.vega ?? null,
+      iv: f?.iv != null && f.iv > 0 ? f.iv : null,
+      openInterest: f?.oi ?? 0,
+      volume: f?.volume ?? 0,
+    });
+  }
+  return { contratos };
+}
+
 export async function fetchTastytradeChain(
   ticker: string,
   opts: {
     dteMin?: number; dteMax?: number; timeoutMs?: number; quoteToken?: QuoteToken;
     /** Nº de vencimientos más cercanos, cuando no se filtra por DTE. */
     expirations?: number;
+    /** Vencimientos exactos (YYYY-MM-DD); mandan sobre DTE y `expirations`. */
+    dates?: string[];
   } = {},
 ): Promise<{ spot: number | null; contracts: TtContract[] }> {
   const clean = ticker.trim().toUpperCase();
   if (!clean) return { spot: null, contracts: [] };
   const { meta, snap, underlying } = await streamChain(
-    clean, { dteMin: opts.dteMin, dteMax: opts.dteMax, expirations: opts.expirations },
+    clean, { dteMin: opts.dteMin, dteMax: opts.dteMax, expirations: opts.expirations, dates: opts.dates },
     { timeoutMs: opts.timeoutMs, includeUnderlying: true, preToken: opts.quoteToken },
   );
 
@@ -734,6 +881,7 @@ export async function fetchTastytradeChain(
       delta: f.delta ?? null, iv: f.iv != null && f.iv > 0 ? f.iv : null,
       gamma: f.gamma ?? null, openInterest: f.oi ?? 0,
       volume: f.volume ?? 0, last: f.last ?? null,
+      symbol: m.occ || undefined, theta: f.theta ?? null, vega: f.vega ?? null,
     });
   }
   return { spot, contracts };

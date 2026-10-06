@@ -260,6 +260,15 @@ html, body {
     flex-direction: row; align-items: center; gap: 6px;
     padding: 8px 12px; border-right: none; border-bottom: 1px solid var(--border);
     overflow-x: auto;
+    /* En vertical la barra se ancla arriba (align-self: flex-start, regla de
+       escritorio). Aquí el eje cambia: con flex-start la barra NO se estira al
+       ancho de la pantalla y se queda con el ancho de su contenido — los diez
+       enlaces en fila medían 1.374px en un móvil de 375, y como la barra no
+       recorta hacia fuera, era la PÁGINA ENTERA la que se desplazaba de lado.
+       Con stretch se ajusta a la pantalla y el desplazamiento se queda dentro de
+       la propia barra, que es lo que hace su overflow-x. */
+    align-self: stretch;
+    max-width: 100%;
   }
   .side-brand { padding: 0 10px 0 2px; }
   .side-tag { display: none; }
@@ -1360,7 +1369,9 @@ tfoot .totals td {
 
 .spread-summary { margin-top: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
 .spread-summary > summary { cursor: pointer; padding: 12px 16px; font-weight: 600; font-size: 14px; }
-.spread-table-wrap { overflow-x: auto; padding: 0 8px 8px; }
+/* Mismo caso que .vp-table-wrap: sin alto máximo la cabecera sticky no se pega. */
+.spread-table-wrap { overflow: auto; max-height: 70vh; padding: 0 8px 8px; }
+.spread-table-wrap thead th { z-index: 2; }
 .spread-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .spread-table th, .spread-table td { text-align: left; padding: 8px 10px; border-top: 1px solid var(--border); }
 .spread-table th { color: var(--muted); font-weight: 600; font-size: 12px; }
@@ -1628,6 +1639,16 @@ tfoot .totals td {
 }
 .z-ticket-none { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
 
+/* Spreads: vertical frente a la opción suelta + venta de prima en los muros */
+.z-spr-cmp { width: 100%; border-collapse: collapse; margin: 14px 0 10px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.z-spr-cmp th {
+  text-align: left; font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted); font-weight: 700; padding: 0 8px 6px 0;
+}
+.z-spr-cmp td { padding: 6px 8px 6px 0; border-top: 1px solid var(--border); }
+.z-spr-sell { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.z-spr-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; font-size: 13px; font-variant-numeric: tabular-nums; }
+
 /* ── GEX Bias: cono de 5 min ───────────────────────────────────────────── */
 .z-outlook {
   border: 1px solid var(--border); border-left-width: 4px; background: var(--panel);
@@ -1823,6 +1844,91 @@ tfoot .totals td {
 .z-close-netgex.down { color: var(--red-text); }
 .z-close-note { margin: 0 0 6px; font-size: 15px; color: var(--text); line-height: 1.5; }
 
+/* Max Pain, charm y MOC de la tarjeta de cierre. Scopeado bajo .z-wrap como el
+   resto del 0DTE: `.z-sig-on`/`.z-sig-off` son nombres genericos y sin el scope
+   podrian pisar a quien reviva el esqueleto z-* viejo (ver CLAUDE.md). */
+.z-wrap .z-close-conf {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted);
+}
+.z-wrap .z-close-conf-alta { color: var(--bg); background: var(--green-dark); border-color: transparent; }
+.z-wrap .z-close-conf-media { color: var(--amber-text); background: var(--amber-bg); border-color: var(--amber-border); }
+.z-wrap .z-close-maxpain {
+  font-size: 24px; font-weight: 700; letter-spacing: -.3px;
+  font-variant-numeric: tabular-nums; color: var(--text);
+}
+.z-wrap .z-close-maxpain.z-close-conflu { color: var(--green-dark); }
+
+.z-wrap .z-close-range { margin: 0 0 12px; display: flex; flex-direction: column; gap: 4px; }
+.z-wrap .z-close-rends {
+  display: flex; justify-content: space-between; font-size: 13px;
+  color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.z-wrap .z-close-rmid { font-weight: 700; color: var(--text); }
+
+/* Charm al cierre */
+.z-wrap .z-charm {
+  background: var(--panel-2); border: 1px solid var(--border); border-left-width: 3px;
+  border-radius: 8px; padding: 10px 12px; margin: 0 0 12px;
+}
+.z-wrap .z-charm-up { border-left-color: var(--green); }
+.z-wrap .z-charm-down { border-left-color: var(--red); }
+.z-wrap .z-charm-flat { border-left-color: var(--faint); }
+.z-wrap .z-charm-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.z-wrap .z-charm-w { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.z-wrap .z-charm-chip {
+  margin-left: auto; font-size: 11px; font-weight: 600; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.z-wrap .z-charm-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.z-wrap .z-charm-bar i { display: block; height: 100%; background: var(--faint); }
+.z-wrap .z-charm-up .z-charm-bar i { background: var(--green); }
+.z-wrap .z-charm-down .z-charm-bar i { background: var(--red); }
+.z-wrap .z-charm-note { margin: 8px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+
+/* MOC manual */
+.z-wrap .z-moc {
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px; margin: 0 0 12px;
+}
+.z-wrap .z-moc-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.z-wrap .z-moc-hint { font-size: 11px; color: var(--faint); }
+.z-wrap .z-moc-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.z-wrap .z-moc-in {
+  width: 96px; font-size: 15px; font-weight: 600; color: var(--text); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
+  font-variant-numeric: tabular-nums;
+}
+.z-wrap .z-moc-in:focus { outline: none; border-color: var(--accent); }
+.z-wrap .z-moc-unit { font-size: 13px; color: var(--muted); }
+.z-wrap .z-moc-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.z-wrap .z-moc-toggle button {
+  font-size: 13px; font-weight: 600; color: var(--muted); background: var(--panel);
+  border: none; padding: 7px 13px; cursor: pointer;
+}
+.z-wrap .z-moc-toggle button.z-moc-buy { color: #fff; background: var(--green-dark); }
+.z-wrap .z-moc-toggle button.z-moc-sell { color: #fff; background: var(--red); }
+.z-wrap .z-moc-tier {
+  font-size: 11px; font-weight: 600; color: var(--amber-text); background: var(--amber-bg);
+  border: 1px solid var(--amber-border); padding: 3px 9px; border-radius: 999px;
+}
+.z-wrap .z-moc-clear {
+  font-size: 15px; line-height: 1; color: var(--faint); background: none;
+  border: none; cursor: pointer; padding: 4px 6px;
+}
+.z-wrap .z-moc-clear:hover { color: var(--text); }
+
+/* Confluencia pin / charm / MOC */
+.z-wrap .z-confl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
+.z-wrap .z-confl-sigs { display: flex; gap: 6px; flex-wrap: wrap; }
+.z-wrap .z-confl-sigs span {
+  font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 6px;
+  border: 1px solid var(--border); color: var(--faint); background: var(--panel);
+}
+.z-wrap .z-sig-on { color: var(--bg) !important; background: var(--green-dark) !important; border-color: transparent !important; }
+.z-wrap .z-sig-clash { color: var(--amber-text) !important; background: var(--amber-bg) !important; border-color: var(--amber-border) !important; }
+.z-wrap .z-confl-count { margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
 /* ── Escenarios de cierre ──────────────────────────────────────────────── */
 .z-fc { border: 1px solid var(--border); background: var(--panel); border-radius: 10px; padding: 16px; margin: 0 0 16px; }
 .z-fc-caveat {
@@ -1855,10 +1961,16 @@ tfoot .totals td {
 .z-chart-msg { padding: 28px 12px; text-align: center; color: var(--faint); font-size: 13px; line-height: 1.5; }
 
 /* ── Cadena (tabla espejo) ─────────────────────────────────────────────── */
-.z-chain-wrap { width: 100%; overflow-x: auto; }
+/* La cadena del 0DTE son cientos de strikes: mismo arreglo de cabecera pegajosa.
+   El redondeo y el recorte se mudan AQUÍ desde la tabla: con overflow en la propia
+   tabla, la cabecera sticky se pegaba a la caja de la tabla (tan alta como ella) y
+   por tanto nunca se pegaba a nada. */
+.z-chain-wrap {
+  width: 100%; overflow: auto; max-height: 75vh;
+  border: 1px solid var(--border); border-radius: 10px;
+}
 .z-wrap .z-chain {
   width: 100%; border-collapse: collapse; background: var(--panel);
-  border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
   font-variant-numeric: tabular-nums; min-width: 860px;
 }
 .z-wrap .z-chain th, .z-wrap .z-chain td {
@@ -1867,7 +1979,12 @@ tfoot .totals td {
 .z-wrap .z-chain thead th {
   background: var(--panel-2); color: var(--muted); font-weight: 600;
   font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  /* Dos filas de cabecera: la de CALLS/PUTS arriba del todo y la de nombres justo
+     debajo, desplazada por el alto de la primera. */
+  position: sticky; z-index: 2;
 }
+.z-wrap .z-chain thead tr.z-side th { top: 0; }
+.z-wrap .z-chain thead tr:not(.z-side) th { top: var(--z-chain-side-h, 33px); }
 .z-wrap .z-chain tr.z-side th { font-size: 12px; letter-spacing: .18em; padding: 8px; }
 .z-side .z-call { color: var(--green-dark); background: var(--green-bg); }
 .z-side .z-put { color: var(--red-text); background: var(--red-bg); }
@@ -2342,7 +2459,13 @@ tfoot .totals td {
 .vp-strikes { font-variant-numeric: tabular-nums; }
 .vp-mut { color: var(--muted); }
 
-.vp-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+/* Cabecera pegajosa: la regla global de tablas la hace sticky, pero sticky
+   necesita una caja que scrollee EN VERTICAL. Con solo overflow-x el encabezado se
+   iba con la página y a media tabla las filas se quedaban sin nombres de columna
+   (el 0DTE cierra decenas de posiciones). El z-index hace falta porque las filas
+   impares llevan fondo propio y, sin él, tapan la cabecera. */
+.vp-table-wrap { overflow: auto; max-height: 70vh; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+.vp-table thead th { z-index: 2; }
 .vp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .vp-table th, .vp-table td { text-align: left; padding: 8px 10px; border-top: 1px solid var(--border-soft); white-space: nowrap; }
 .vp-table th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; border-top: none; }
@@ -2434,3 +2557,133 @@ tfoot .totals td {
 .pt-grid { margin: 12px 0; }
 .pt-card-main .vpp-bar { margin-bottom: 10px; }
 .vpp-mark.trigger { width: 2px; background: var(--accent); }
+
+/* ==========================================================================
+   Playbook del Rango (/scalping) — fase 1, solo observar.
+   Los tres niveles se pintan APILADOS en el orden en que están en el precio
+   (techo arriba, piso abajo) porque es como el manual los dibuja y como se ven
+   en la gráfica: una tabla de tres filas ordenadas por otra cosa obligaría a
+   traducir mentalmente cada vez.
+   ========================================================================== */
+.sc-page { padding: 20px 24px 48px; display: flex; flex-direction: column; gap: var(--space-md); }
+
+.sc-aviso {
+  padding: 12px 14px; border-radius: 10px; font-size: 12.5px; line-height: 1.6;
+  background: var(--amber-bg); border: 1px solid var(--amber-border); color: var(--amber-text);
+}
+.sc-nota {
+  padding: 9px 12px; border-radius: 9px; font-size: 12px;
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text-2);
+}
+
+.sc-btn {
+  padding: 8px 14px; border-radius: 9px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  background: var(--accent); color: #fff; border: 1px solid var(--accent);
+}
+.sc-btn:disabled { opacity: 0.5; cursor: default; }
+.sc-btn-full { width: 100%; margin-top: 10px; }
+.sc-input {
+  flex: 1; min-width: 0; padding: 8px 12px; border-radius: 9px; font-size: 12.5px;
+  background: var(--panel); border: 1px solid var(--border); color: var(--text);
+}
+.sc-preview { display: flex; gap: 8px; margin-top: var(--space-sm); }
+
+.sc-progreso-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.sc-progreso-num { font-size: 30px; font-weight: 700; line-height: 1; white-space: nowrap; }
+.sc-progreso-num span { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+.sc-barra { height: 7px; border-radius: 4px; background: var(--track); margin: 12px 0; overflow: hidden; }
+.sc-barra-fill { height: 100%; background: var(--accent); border-radius: 4px; }
+.sc-lectura { margin: 0; font-size: 13px; line-height: 1.6; color: var(--text-2); }
+
+.sc-hoy { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-sm); margin-top: var(--space-sm); }
+.sc-card { padding: 12px 14px; border-radius: 11px; background: var(--panel-2); border: 1px solid var(--border); }
+.sc-card-wide { margin-top: var(--space-sm); }
+.sc-verde { border-left: 3px solid var(--green); }
+.sc-ambar { border-left: 3px solid var(--amber); }
+.sc-rojo  { border-left: 3px solid var(--red); }
+.sc-sin   { border-left: 3px solid var(--border); }
+.sc-card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.sc-tk { font-size: 15px; font-weight: 700; }
+.sc-tk em { font-size: 11px; font-weight: 400; color: var(--muted); font-style: normal; }
+.sc-luz { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; }
+.sc-pend { color: var(--faint); }
+
+.sc-niveles { display: flex; flex-direction: column; gap: 4px; margin: 12px 0 10px; }
+.sc-nivel {
+  display: grid; grid-template-columns: 62px 1fr auto; align-items: baseline; gap: 8px;
+  padding: 6px 10px; border-radius: 7px; background: var(--panel); border: 1px solid var(--border-soft);
+}
+.sc-nivel span { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; color: var(--muted); }
+.sc-nivel strong { font-size: 15px; font-variant-numeric: tabular-nums; }
+.sc-nivel em { font-size: 10.5px; font-style: normal; color: var(--faint); }
+.sc-techo { border-left: 2px solid var(--red-soft); }
+.sc-centro { border-left: 2px solid var(--accent); }
+.sc-piso { border-left: 2px solid var(--green); }
+
+.sc-datos { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; color: var(--muted); }
+.sc-datos strong { color: var(--text); font-variant-numeric: tabular-nums; }
+.sc-veredicto-luz { margin-top: 10px; font-size: 11.5px; font-weight: 700; }
+.sc-motivos { margin: 6px 0 0; padding-left: 16px; font-size: 11.5px; line-height: 1.55; color: var(--text-2); }
+
+/* La bitácora son 80+ filas y la cabecera es sticky por la regla global de tablas.
+   Sticky necesita una caja que SCROLLEE EN VERTICAL donde pegarse: con solo
+   overflow-x el encabezado se iba con la página y las filas se quedaban sin nombres
+   de columna a media tabla. Con alto máximo, los nombres se quedan fijos mientras
+   ruedan las filas. El z-index hace falta porque las filas impares llevan fondo
+   propio y, sin él, pasan por encima de la cabecera. */
+.sc-scroll { overflow: auto; max-height: 70vh; }
+/* Tablas de pocas filas (el resumen por semáforo): el alto máximo no aporta nada
+   y dejaría una caja medio vacía con barra propia. Solo se quiere el scroll
+   horizontal para que en el móvil no desborden las 8 columnas. */
+.sc-scroll-corto { max-height: none; }
+.sc-tabla thead th { z-index: 2; background: var(--panel-2); }
+.sc-tabla { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: var(--space-sm); }
+.sc-tabla th {
+  /* SIN text-align propio: las celdas heredan la alineación a la DERECHA de la
+     regla global de tablas (y la primera columna, a la izquierda). Cuando la
+     cabecera iba a la izquierda y el valor a la derecha, en columnas anchas el
+     nombre quedaba en un extremo y el dato en el otro: se leía como si las
+     columnas estuvieran descuadradas. */
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.sc-tabla td { padding: 7px 8px; border-bottom: 1px solid var(--border-soft); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sc-tabla tr:nth-child(odd) td { background: var(--row-odd); }
+.sc-total td { font-weight: 700; border-top: 1px solid var(--border); }
+.sc-ok { color: var(--green-strong); }
+.sc-bad { color: var(--red-strong); }
+.sc-vd { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 999px; }
+.sc-vd-respeto { background: var(--green-bg); color: var(--green-strong); }
+.sc-vd-rompio { background: var(--red-bg); color: var(--red-strong); }
+.sc-vd-no_llego { background: var(--neutral-bg); color: var(--neutral-text); }
+.sc-tickers { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+.sc-rutina-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-md); margin-top: var(--space-sm); }
+.sc-rutina h4 { margin: 0 0 6px; font-size: 12px; font-weight: 700; }
+.sc-rutina h4 + ul + h4 { margin-top: 14px; }
+.sc-rutina ul { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.7; color: var(--text-2); }
+
+@media (max-width: 700px) {
+  .sc-page { padding: 16px 14px 40px; }
+  .sc-progreso-head { flex-direction: column; }
+}
+.sc-fuera {
+  margin-left: 6px; padding: 1px 6px; border-radius: 999px; font-size: 9.5px; font-weight: 700;
+  background: var(--amber-bg); color: var(--amber-text); border: 1px solid var(--amber-border);
+}
+
+/* Estado de cada ficha del rango: la CONGELADA es la que cuenta, la EN VIVO
+   cambia con el precio hasta que se anote. La distinción va en la tarjeta y no
+   solo en una leyenda porque es la diferencia entre un dato medido y una vista. */
+.sc-luz em { font-style: normal; font-size: 9.5px; margin-left: 6px; padding: 1px 6px; border-radius: 999px; }
+.sc-cong { background: var(--invert-bg); color: var(--invert-text); }
+.sc-vivo { background: var(--chip-bg); color: var(--muted); }
+.sc-cargando { margin-left: 10px; font-size: 11px; font-weight: 500; color: var(--muted); }
+.sc-err { color: var(--red-strong); padding-left: 0; list-style: none; }
+.sc-esqueleto {
+  height: 132px; margin: 12px 0 10px; border-radius: 9px;
+  background: linear-gradient(90deg, var(--panel) 25%, var(--surface-hover) 50%, var(--panel) 75%);
+  background-size: 200% 100%; animation: sc-latido 1.4s ease-in-out infinite;
+}
+@keyframes sc-latido { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .sc-esqueleto { animation: none; } }

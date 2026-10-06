@@ -4,7 +4,8 @@
 // otras y el motor RENORMALIZA los pesos (nunca rellena el hueco con un 50).
 //   · VIX      → Schwab (Massive no está autorizado para índices).
 //   · Momento  → barras diarias de SPY (Massive) contra su media de 125 sesiones.
-//   · Put/Call → prima ejecutada hoy en TODO el mercado (MarketSnack).
+//   · Put/Call → prima ejecutada hoy en el universo barrido (Tastytrade) o en todo
+//     el mercado (MarketSnack), según lo que haya. Ver lib/marketFlow.
 //
 // CACHE EN MEMORIA obligatorio: este endpoint lo pide la barra lateral, que vive en
 // TODAS las páginas. Sin cache, cada navegación relanzaría un escaneo paginado del
@@ -12,7 +13,7 @@
 
 import { fetchDailyBars } from "@/lib/massive";
 import { fetchQuote, SchwabError } from "@/lib/schwab";
-import { fetchMarketFlow } from "@/lib/marketsnack";
+import { fetchMarketFlowCascade } from "@/lib/marketFlow";
 import { classifyFlow } from "@/lib/flow";
 import { sma } from "@/lib/sma";
 import { buildPulseComponents, marketSentiment, vixState } from "@/lib/marketPulse";
@@ -75,7 +76,7 @@ export async function GET(request: Request) {
       return null;
     }),
     fetchDailyBars("SPY", BARS_DAYS).catch(() => []),
-    fetchMarketFlow({ period: "1d", minPremium: FLOW_MIN_PREMIUM, maxPages: FLOW_MAX_PAGES })
+    fetchMarketFlowCascade({ period: "1d", days: 1, minPremium: FLOW_MIN_PREMIUM, maxPages: FLOW_MAX_PAGES })
       .catch(() => null),
   ]);
 

@@ -27,13 +27,21 @@ echo Instalando TitoMetralleta-Bitacora-Swing ...
 schtasks /create /tn "TitoMetralleta-Bitacora-Swing" /tr "wscript.exe \"%VBS%\"" /sc daily /st 09:00 /ri 10 /du 0008:00 /f
 if errorlevel 1 goto error
 
+REM  WakeToRun DESPIERTA el equipo para correr, y hace falta de verdad: este
+REM  portatil usa Modern Standby (S0), que NO lo gobiernan los tiempos de
+REM  suspension de powercfg (estan todos en Nunca y aun asi se duerme). El
+REM  2026-09-07 se durmio por la manana y las tareas perdidas se dispararon todas
+REM  juntas a las 16:45 ET, cinco horas tarde. Solo surte efecto si el plan de
+REM  energia permite temporizadores de reactivacion (SUB_SLEEP RTCWAKE); con
+REM  bateria suelen venir desactivados.
+REM
 REM  schtasks deja por defecto "no arrancar con bateria" y "parar al pasar a
 REM  bateria": en un portatil eso significa que la tarea NO corre el dia que no
 REM  estas enchufado, y en silencio. Se corrige con PowerShell, que es lo unico
 REM  que puede tocar esos flags. StartWhenAvailable recupera la corrida si el
 REM  equipo estaba dormido; el limite de 5 min mata un refresco colgado para que
 REM  el siguiente pueda entrar.
-powershell -NoProfile -Command "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew; Set-ScheduledTask -TaskName 'TitoMetralleta-Bitacora-Swing' -Settings $s | Out-Null"
+powershell -NoProfile -Command "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -WakeToRun -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew; Set-ScheduledTask -TaskName 'TitoMetralleta-Bitacora-Swing' -Settings $s | Out-Null"
 
 echo.
 echo Listo. La bitacora ya se refresca sola.

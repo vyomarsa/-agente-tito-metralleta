@@ -13,11 +13,22 @@
 //
 // SIMULACIÓN: "probabilidad" = fuerza del setup, NUNCA una garantía.
 
+import { commissionOf } from "./commissions";
+
 export type PaperStatus = "pendiente" | "activa" | "ganada" | "perdida" | "expirada";
 export type OptionType = "call" | "put";
 /** Hacia dónde debe moverse el subyacente para cruzar el gatillo y buscar el objetivo. */
 export type Direction = "up" | "down";
-export type CloseReason = "objetivo" | "stop" | "trailing" | "expirada" | "caducada" | "manual" | null;
+export type CloseReason =
+  | "objetivo"
+  | "stop"
+  | "trailing"
+  | "expirada"
+  | "caducada"
+  | "invalidada"
+  | "sin_tamano"
+  | "manual"
+  | null;
 export type Source = "manual" | "auto";
 
 export interface PaperTrade {
@@ -39,7 +50,19 @@ export interface PaperTrade {
   trailing: boolean; // usar stop dinámico de ganancia sobre la prima
   probability: number | null; // 0..100, heurística (fuerza del setup)
   note: string | null; // "Swing", "Day Trading", etc.
-  contracts: number; // editable
+  /**
+   * Contratos. Editable a mano, pero en los AUTO lo fija `sizeForSwing` AL ENTRAR
+   * (ver `evaluate`): antes nacía en 1 y se quedaba en 1 para siempre.
+   */
+  contracts: number;
+  /**
+   * Fracción del capital arriesgada al entrar (0.02 = 2%). Se apunta por el mismo
+   * motivo que en venta de prima: desde que existe la banda 2–3%, una posición
+   * puede nacer al borde bajo o estirada al alto, y sin este dato el win rate
+   * mezclaría dos tamaños de apuesta distintos. Ausente en las anteriores al
+   * 2026-08-28, que se abrieron todas con 1 contrato sin dimensionar.
+   */
+  riskPctUsed?: number;
 
   // --- Ejecución (PRIMA de la opción) ---
   status: PaperStatus;
@@ -53,6 +76,11 @@ export interface PaperTrade {
   updatedAt: string | null;
   closeReason: CloseReason;
   verdict: string | null; // veredicto en palabras al cerrar
+  /**
+   * Comisiones cobradas en $ (1 pata: al entrar y, salvo que venza, al salir). Se
+   * guarda al cerrar desde el 2026-09-17; en las anteriores se DERIVA con `feesOf`.
+   */
+  fees?: number;
 }
 
 /** Fracción del avance de la prima que asegura el trailing (0.5 = la mitad). */
@@ -89,15 +117,123 @@ export function securedGain(t: PaperTrade, frac = TRAIL_LOCK_FRACTION): number {
   const s = trailStopPrice(t.entryPrice, t.peakPrice, frac);
   return Math.max(0, (s - t.entryPrice) * 100 * t.contracts);
 }
-/** P&L realizado (solo si cerró con entrada y salida). */
+/** P&L realizado BRUTO (solo si cerró con entrada y salida). */
 export function realizedPnl(t: PaperTrade): number {
   if (t.entryPrice == null || t.exitPrice == null) return 0;
   return (t.exitPrice - t.entryPrice) * 100 * t.contracts;
 }
-/** P&L NO realizado de un trade activo (entrada vs. prima actual). */
+/** P&L NO realizado BRUTO de un trade activo (entrada vs. prima actual). */
 export function unrealizedPnl(t: PaperTrade): number {
   if (t.status !== "activa" || t.entryPrice == null || t.currentPrice == null) return 0;
   return (t.currentPrice - t.entryPrice) * 100 * t.contracts;
+}
+
+/**
+ * Comisiones del trade. Lo que nunca entró no pagó nada; uno activo, solo la
+ * entrada; uno cerrado, entrada y salida — salvo que venciera, que se liquida sin
+ * orden. Si el trade trae `fees` guardado, manda ese.
+ */
+export function feesOf(t: PaperTrade): number {
+  if (t.fees != null) return t.fees;
+  if (t.entryPrice == null) return 0;
+  if (t.status === "activa") return commissionOf(t.contracts, 1, false);
+  return commissionOf(t.contracts, 1, t.closeReason !== "expirada");
+}
+/** P&L realizado NETO de comisiones. 0 si el cierre no tiene precio (no se inventa). */
+export function netRealizedPnl(t: PaperTrade): number {
+  if (!isPriced(t)) return 0;
+  return realizedPnl(t) - feesOf(t);
+}
+/** P&L latente NETO: descuenta la comisión de entrada, ya pagada. */
+export function netUnrealizedPnl(t: PaperTrade): number {
+  if (t.status !== "activa" || t.entryPrice == null || t.currentPrice == null) return 0;
+  return unrealizedPnl(t) - feesOf(t);
+}
+
+// ---------------------------------------------------------------------------
+// DIMENSIONAMIENTO
+// ---------------------------------------------------------------------------
+
+/** Capital de partida de la cuenta simulada, igual que venta de prima y 0DTE. */
+export const START_EQUITY = 10_000;
+/** Banda del mandato §8: se dimensiona al 2% y solo se estira al 3% para UNO. */
+export const RISK_PER_TRADE_PCT = 0.02;
+export const RISK_PER_TRADE_MAX_PCT = 0.03;
+
+/** ¿Esta posición se abrió con un tamaño calculado, o con el 1 fijo de antes? */
+export function wasSized(t: PaperTrade): boolean {
+  return t.riskPctUsed != null;
+}
+
+/**
+ * Capital simulado con el que se DIMENSIONA: parte del capital inicial y suma el P&L
+ * de los cierres que se abrieron **dimensionados**.
+ *
+ * POR QUÉ NO SUMA TODO EL LIBRO, que es lo que uno esperaría. Hasta el 2026-08-28 el
+ * piloto abría 1 contrato fuera cual fuera la prima, así que sus dólares no describen
+ * una cuenta: describen el bug. Ese libro acumula −$12.630 sobre un capital de
+ * $10.000 — más de lo que la cuenta tenía, porque llegó a "comprar" un put de $29.620.
+ * Arrastrarlo aquí dejaría el capital NEGATIVO y `sizeForSwing` devolvería 0 contratos
+ * para siempre: un bug de medición apagaría el agente de forma permanente y silenciosa.
+ *
+ * No se borra ni se reescribe nada: `closedPnl` sigue sumando TODOS los cierres con
+ * precio y la pantalla enseña los dos números. Lo único que se acota es qué historia
+ * puede decidir el tamaño de la próxima entrada, y la respuesta correcta es "solo la
+ * que se midió con esta vara".
+ */
+export function equityOf(trades: PaperTrade[], startEquity = START_EQUITY): number {
+  let eq = startEquity;
+  for (const t of trades) if (isClosed(t) && isPriced(t) && wasSized(t)) eq += netRealizedPnl(t);
+  return Math.round(eq * 100) / 100;
+}
+
+/**
+ * Contratos de un swing, por la BANDA 2–3% del capital.
+ *
+ * POR QUÉ EXISTE. Hasta el 2026-08-28 el piloto abría `DEFAULT_CONTRACTS = 1` y ahí
+ * se quedaba: la bitácora tenía una prima de $2,40 (IBIT, $240 comprometidos) al
+ * lado de una de $296,20 (SNDK, **$29.620** en una cuenta de $10.000). El resultado
+ * no medía la señal, medía el precio del contrato que la institución hubiera
+ * operado — que el agente ni elige, lo copia del flujo. Las tres peores pérdidas del
+ * libro (CAT −$4.488, MSTR −$2.462, BE −$2.310) son de los contratos caros, y la
+ * perdedora media (−$1.522) salía 2,33× la ganadora media (+$654): con esa asimetría
+ * hacía falta un 70% de acierto para no perder, contra el 38% real.
+ *
+ * EL RIESGO ES LA PRIMA COMPLETA, no la pérdida estimada en el stop. Es lo mismo que
+ * hace `zerodtePaper.maxRiskOf`, y por la misma razón: el stop del plan vive en el
+ * SUBYACENTE y **no acota** lo que puede perder la opción — un hueco de apertura o un
+ * desplome de IV se la lleva entera, y de hecho el stop de SOXX se comió el 73% de la
+ * prima. Medir el riesgo por el delta daría un número más halagüeño y menos cierto.
+ *
+ * CONSECUENCIA, y es la correcta: con $10.000 solo caben contratos de prima baja.
+ * Aplicado al libro histórico, 17 de 21 posiciones no habrían entrado — porque una
+ * cuenta de $10.000 no puede comprar un put de $29.620. Que el agente las abriera
+ * era ficción, no oportunidad.
+ */
+export function sizeForSwing(
+  entryPrice: number,
+  equity: number,
+  lo: number = RISK_PER_TRADE_PCT,
+  hi: number = RISK_PER_TRADE_MAX_PCT,
+): { contracts: number; riskPct: number } {
+  const porContrato = entryPrice * 100;
+  if (!(porContrato > 0) || !(equity > 0)) return { contracts: 0, riskPct: 0 };
+
+  const conBase = Math.floor((equity * lo) / porContrato);
+  if (conBase >= 1) return { contracts: conBase, riskPct: pctOf(porContrato * conBase, equity) };
+
+  // No cabe ni uno al borde bajo: ¿cabe UNO dentro del tope del mandato? Nunca se
+  // estira para poner MÁS de uno — estirar la banda para tomar una posición que no
+  // cabía es una cosa, y usar el tope como tamaño normal es otra.
+  if (porContrato <= equity * hi) return { contracts: 1, riskPct: pctOf(porContrato, equity) };
+
+  return { contracts: 0, riskPct: 0 };
+}
+
+/** Fracción del capital que arriesga una posición, redondeada a 4 decimales. */
+function pctOf(riesgo: number, equity: number): number {
+  if (!(equity > 0)) return 0;
+  return Math.round((riesgo / equity) * 10000) / 10000;
 }
 
 /**
@@ -170,6 +306,10 @@ function verdictFor(reason: Exclude<CloseReason, null>, prob: number | null): st
       return `Expiró sin resolverse.${tail}`;
     case "caducada":
       return `Caducada: pasaron ${PENDING_MAX_DAYS} días sin cruzar el gatillo, la señal ya no es la misma.${tail}`;
+    case "invalidada":
+      return `Invalidada: el subyacente cruzó el stop del plan ANTES de disparar el gatillo, así que la idea ya estaba muerta. Nunca entró.${tail}`;
+    case "sin_tamano":
+      return `No entró: ni UN contrato cabe en el ${Math.round(RISK_PER_TRADE_MAX_PCT * 100)}% del capital. La señal pudo ser buena; la posición no cabía.${tail}`;
     case "manual":
       return `Cerrada a mano.${tail}`;
   }
@@ -192,6 +332,12 @@ export function evaluate(
    * siendo puro.
    */
   settleUnderlying: number | null = null,
+  /**
+   * Capital simulado, para dimensionar la entrada (`sizeForSwing`). Lo calcula la
+   * ruta con `equityOf` sobre la bitácora entera; por defecto el capital de partida,
+   * que es lo correcto para un libro vacío y para los tests que no lo pasan.
+   */
+  equity: number = START_EQUITY,
 ): PaperTrade {
   if (isClosed(trade)) return trade;
   const nowIso = now.toISOString();
@@ -209,6 +355,10 @@ export function evaluate(
     exitAt: nowIso,
     closeReason: reason,
     verdict: verdictFor(reason, t.probability),
+    // Solo paga quien entró y salió con precio; vencer no tiene orden de cierre.
+    ...(t.entryPrice != null && exit != null
+      ? { fees: commissionOf(t.contracts, 1, reason !== "expirada") }
+      : {}),
   });
 
   if (t.status === "pendiente") {
@@ -218,8 +368,61 @@ export function evaluate(
     // Va ANTES de la caducidad a propósito: un plan que cruza justo el día 7 SÍ disparó,
     // sería absurdo matarlo por viejo en el mismo instante en que funciona.
     if (u != null && mark != null && crossedTrigger(t, u)) {
-      return { ...t, status: "activa", entryPrice: mark, entryAt: nowIso, peakPrice: mark };
+      /**
+       * El tamaño se fija AQUÍ y no al crear el plan, porque hasta este instante no
+       * se conoce la prima: un pendiente no tiene precio de entrada. Es también el
+       * único momento en que el dato es el bueno — dimensionar con la prima de hace
+       * siete días sería dimensionar otra posición.
+       *
+       * Sin sitio para un solo contrato el plan NO entra y se CIERRA, en vez de
+       * quedarse pendiente: un pendiente sigue reservando su ticker por la regla de
+       * "una entrada por ticker" del piloto, y ese veto fantasma es justo lo que el
+       * 2026-08-17 dejó 58 tickers bloqueados y un escaneo con 25 candidatos
+       * abriendo cero. Se cierra sin precios, así que no cuenta ni como acierto ni
+       * como fallo (`outcomeOf`): no fue una idea fallida, fue una que no cupo.
+       */
+      // SOLO se dimensionan los AUTO. En un trade manual los contratos los tecleó
+      // el dueño a sabiendas, y pisar una decisión explícita suya sería peor que el
+      // bug que esto arregla; para cambiarlos ya tiene el editor de la bitácora.
+      if (t.source !== "auto") {
+        return { ...t, status: "activa", entryPrice: mark, entryAt: nowIso, peakPrice: mark };
+      }
+      const { contracts, riskPct } = sizeForSwing(mark, equity);
+      if (contracts < 1) return close("expirada", "sin_tamano", null);
+      return {
+        ...t,
+        status: "activa",
+        entryPrice: mark,
+        entryAt: nowIso,
+        peakPrice: mark,
+        contracts,
+        riskPctUsed: riskPct,
+      };
     }
+    /**
+     * INVALIDADA: el subyacente cruzó el STOP del plan sin haber cruzado el gatillo.
+     *
+     * El plan dice "entra en X, objetivo Y, invalida en Z". Si el precio llega a Z
+     * primero, la premisa se acabó: el flujo institucional que originó la idea ocurrió
+     * a un precio que ya no existe, y para volver al gatillo haría falta el recorrido
+     * entero de vuelta. Esperar los 7 días de la caducidad no aporta nada y **cuesta**:
+     * un pendiente sigue reservando su ticker por la regla de "una entrada por ticker"
+     * del piloto, así que cada zombi es un candidato bueno que no se pudo abrir.
+     *
+     * Medido en el libro el 2026-08-28: de 33 caducadas, **20 ya habían cruzado su
+     * propio stop** — SNDK necesitaba un +32% de vuelta, HL un +15,8%, GOOGL un +11,8%.
+     * Ninguna iba a disparar, y entre todas bloquearon 20 tickers durante días.
+     *
+     * VA DESPUÉS del gatillo, y el orden importa por lo mismo que la caducidad: si en la
+     * misma pasada el precio hubiera cruzado el gatillo, ese plan SÍ disparó. (Con los
+     * niveles a lados opuestos del precio no pueden cumplirse los dos a la vez, pero el
+     * orden deja la intención escrita para el día que los niveles cambien.)
+     *
+     * Cierra SIN precios, así que `outcomeOf` la deja en `sin_decidir`: no fue una idea
+     * fallida, fue una que no llegó a probarse. Contarla como fallo castigaría al modelo
+     * por un trade que nunca tomó.
+     */
+    if (u != null && hitStop(t, u)) return close("expirada", "invalidada", null);
     // No cruzó y la señal ya envejeció → se cierra y LIBERA el ticker.
     if (pendingTooOld(t, now)) return close("expirada", "caducada", null);
     return t; // sigue pendiente
@@ -310,12 +513,16 @@ export function outcomeOf(t: PaperTrade): Outcome {
   // "expirada" estando activa y "manual" no las decide el plan: las decide el dinero,
   // y solo si hay dinero que mirar.
   if (!isPriced(t)) return "sin_decidir";
-  const pnl = realizedPnl(t);
+  const pnl = netRealizedPnl(t);
   return pnl > 0 ? "acierto" : pnl < 0 ? "fallo" : "sin_decidir";
 }
 
 export interface PaperSummary {
-  closedPnl: number; // P&L neto de lo cerrado CON precio
+  closedPnl: number; // P&L de lo cerrado CON precio, NETO de comisiones (desde 2026-09-17)
+  /** El mismo P&L sin comisiones. */
+  grossPnl: number;
+  /** Comisiones de los cierres con precio + la entrada de los activos. */
+  feesPaid: number;
   /** Aciertos POR PLAN, sobre TODO lo decidido (tenga precio de salida o no). */
   wins: number;
   losses: number;
@@ -346,11 +553,27 @@ export interface PaperSummary {
   unpriced: number;
   /** Cierres que sí tienen los dos precios (los únicos que suman al P&L). */
   priced: number;
+  /** Capital de partida de la cuenta simulada. */
+  startEquity: number;
+  /**
+   * Capital con el que `sizeForSwing` dimensiona. Solo suma los cierres que nacieron
+   * dimensionados — ver `equityOf` para el porqué. Puede diferir de
+   * `startEquity + closedPnl`, y esa diferencia es exactamente el P&L del libro viejo.
+   */
+  equity: number;
+  /** Planes que cruzaron el gatillo pero no cabían ni con un contrato. */
+  sinTamano: number;
+  /** Pendientes que cruzaron su propio stop antes del gatillo: la idea murió sin probarse. */
+  invalidadas: number;
+  /** Cierres con precio abiertos ANTES del dimensionamiento (1 contrato fijo). */
+  unsizedClosed: number;
 }
 
 /** Estadísticas de la bitácora. El acierto lo decide `outcomeOf`, no el signo del P&L. */
 export function summarize(trades: PaperTrade[]): PaperSummary {
   let closedPnl = 0;
+  let grossPnl = 0;
+  let feesPaid = 0;
   let wins = 0;
   let losses = 0;
   let pending = 0;
@@ -358,18 +581,26 @@ export function summarize(trades: PaperTrade[]): PaperSummary {
   let openUnrealized = 0;
   let unpriced = 0;
   let priced = 0;
+  let sinTamano = 0;
+  let invalidadas = 0;
+  let unsizedClosed = 0;
   let winsPriced = 0;
   let lossesPriced = 0;
   for (const t of trades) {
     if (isClosed(t)) {
       if (isPriced(t)) {
-        closedPnl += realizedPnl(t);
+        closedPnl += netRealizedPnl(t);
+        grossPnl += realizedPnl(t);
+        feesPaid += feesOf(t);
         priced++;
       } else if (t.entryPrice != null) {
         // Entró pero no hay prima de salida: cuenta como acierto/fallo si el plan lo
         // decidió, pero su P&L no se suma — sumarlo como 0 sería inventar.
         unpriced++;
       }
+      if (t.closeReason === "sin_tamano") sinTamano++;
+      if (t.closeReason === "invalidada") invalidadas++;
+      if (isPriced(t) && !wasSized(t)) unsizedClosed++;
       const o = outcomeOf(t);
       if (o === "acierto") wins++;
       else if (o === "fallo") losses++;
@@ -381,13 +612,16 @@ export function summarize(trades: PaperTrade[]): PaperSummary {
       pending++;
     } else if (t.status === "activa") {
       active++;
-      openUnrealized += unrealizedPnl(t);
+      openUnrealized += netUnrealizedPnl(t);
+      if (t.entryPrice != null) feesPaid += feesOf(t);
     }
   }
   const decided = wins + losses;
   const decidedPriced = winsPriced + lossesPriced;
   return {
     closedPnl,
+    grossPnl,
+    feesPaid,
     wins,
     losses,
     winRatePct: decided > 0 ? (wins / decided) * 100 : null,
@@ -399,5 +633,10 @@ export function summarize(trades: PaperTrade[]): PaperSummary {
     openUnrealized,
     unpriced,
     priced,
+    startEquity: START_EQUITY,
+    equity: equityOf(trades),
+    sinTamano,
+    invalidadas,
+    unsizedClosed,
   };
 }

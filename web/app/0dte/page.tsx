@@ -8,6 +8,7 @@ import type {
   ZeroDteEvalResponse,
   ZeroDteAnalysis,
   ZeroDteBias,
+  ZeroDteClose,
   ZeroDtePinning,
   ZeroDteScoreboard,
   ZeroDteStrike,
@@ -16,6 +17,8 @@ import type {
   ZeroDteTradeCard,
   AggressorRead,
 } from "./types";
+import type { ZeroDteCreditSpread, ZeroDteSpreads } from "@/lib/zerodteSpreads";
+import { breakevenWinPct } from "@/lib/zerodteSpreads";
 
 // Vista 0DTE: cadena del día por volumen, muros, imán del GEX, señales tácticas
 // (ticket + dos modelos de trade + sesgo a 5 min), cinta en vivo (CVD/velocidad/
@@ -34,6 +37,21 @@ import type {
 const SYMBOLS = ["SPY", "QQQ", "IWM", "SPX"];
 const REFRESH_MS = 60_000;
 const LS_KEY = "tito.0dte.sym";
+/** El MOC es de UNA sesión: se guarda con su fecha y caduca solo al día siguiente. */
+const MOC_KEY = "tito.0dte.moc";
+/** Por encima de esto el imbalance se considera fuerte (miles de millones). */
+const MOC_STRONG_MLN = 1500;
+
+/** Fecha de la sesión en Nueva York (YYYY-MM-DD). "" si el entorno no la sabe. */
+function etTodayStr(): string {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return "";
+  }
+}
 
 function signed(n: number, digits = 2): string {
   return `${n >= 0 ? "+" : ""}${n.toFixed(digits)}`;
@@ -201,6 +219,7 @@ export default function ZeroDtePage() {
           <ZeroMeta data={data} updatedAt={updatedAt} />
 
           <ZeroTicket ticket={data.signals.ticket} note={data.signals.ticketNote} open={data.sessionOpen} />
+          <ZeroSpreads spreads={data.signals.spreads} ticket={data.signals.ticket} open={data.sessionOpen} />
           <ZeroTrade card={data.signals.trade} title="GEX Trade" sub="— vuelta al imán" open={data.sessionOpen} />
           <ZeroTrade card={data.signals.tradeAlt} title="GEX Trade" sub="· alterno" open={data.sessionOpen} alt />
           <ZeroBias bias={data.signals.bias} sub="— próximos 5 min" />
@@ -212,7 +231,12 @@ export default function ZeroDtePage() {
 
           <ZeroSummary a={data.analysis} />
           <ZeroGex a={data.analysis} />
-          <ZeroPinning pin={data.signals.pinning} ticker={data.ticker} />
+          <ZeroPinning
+            pin={data.signals.pinning}
+            close={data.signals.close}
+            ticker={data.ticker}
+            spot={data.analysis.spot}
+          />
           <ZeroScenarios
             a={data.analysis}
             minutesLeft={data.minutesLeft}
@@ -241,7 +265,7 @@ export default function ZeroDtePage() {
 
 function ZeroMeta({ data, updatedAt }: { data: ZeroDteResponse; updatedAt: string | null }) {
   const {
-    spot, change, changePercent, expiration, isToday, selectedDte, spotSource,
+    spot, change, changePercent, expiration, isToday, selectedDte, spotSource, chainSource,
     minutesLeft, contractCount, analysis, ticker,
   } = data;
   const dir = changePercent == null ? "" : changePercent > 0 ? "up" : changePercent < 0 ? "down" : "";
@@ -256,7 +280,7 @@ function ZeroMeta({ data, updatedAt }: { data: ZeroDteResponse; updatedAt: strin
         )}
       </span>
       <span>Vence <b>{expiration}</b> {isToday ? "(hoy · 0DTE)" : `(${selectedDte} DTE)`}</span>
-      <span>{int.format(contractCount)} contratos en la cadena</span>
+      <span>{int.format(contractCount)} contratos en la cadena · {chainSource === "marketsnack" ? "MarketSnack (respaldo)" : "Tastytrade"}</span>
       {isToday && minutesLeft > 0 && <span>Cierre en <b>{h}h {m}m</b></span>}
       {updatedAt && (
         <span className="z-time">
@@ -333,6 +357,109 @@ function ZeroTicket({ ticket, note, open }: { ticket: ZeroDteTicket | null; note
           <p className="z-ticket-foot">
             {ticket.rationale} El agente calcula y muestra; tú decides y ejecutas.{" "}
             <b>No es una orden ni un consejo.</b>
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// GEX Spreads — la misma tesis con riesgo definido
+// ---------------------------------------------------------------------------
+
+function pct(n: number | null): string {
+  return n == null ? "—" : `${n.toFixed(0)}%`;
+}
+
+function ZeroSpreads({
+  spreads, ticket, open,
+}: { spreads: ZeroDteSpreads | undefined; ticket: ZeroDteTicket | null; open: boolean }) {
+  if (!spreads) return null;
+  const v = spreads.vertical;
+  const ticketBe = ticket ? breakevenWinPct(ticket.targetGain, ticket.stopLoss) : null;
+  const state = !v ? "z-ticket-idle" : v.type === "call" ? "z-ticket-long" : "z-ticket-short";
+  const credits = [spreads.creditPut, spreads.creditCall].filter((c): c is ZeroDteCreditSpread => c != null);
+
+  return (
+    <section className={`z-ticket ${state}`}>
+      <header>
+        <h2>GEX Spreads <span className="z-live-sub">— riesgo definido</span></h2>
+        {v && <span className="z-ticket-badge">{v.kind === "bull_call" ? "BULL CALL" : "BEAR PUT"}</span>}
+      </header>
+
+      {!open ? (
+        <p className="z-ticket-none">Mercado cerrado — no hay spreads en vivo que sugerir.</p>
+      ) : (
+        <>
+          {v ? (
+            <>
+              <div className="z-ticket-buy">
+                <span className="z-ticket-act">VERTICAL</span>
+                <span className="z-ticket-ctr">
+                  {px.format(v.longStrike)} / {px.format(v.shortStrike)} {v.type === "call" ? "CALL" : "PUT"}
+                </span>
+                <span className="z-ticket-at">débito</span>
+                <span className="z-ticket-price">${v.debit.toFixed(2)}</span>
+                <span className="z-ticket-quote">ancho {v.width} · empata en {px.format(v.breakeven)} a vencimiento</span>
+              </div>
+
+              <table className="z-spr-cmp">
+                <thead>
+                  <tr><th></th><th>Ganancia</th><th>Pérdida</th><th>Acierto para empatar</th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Opción suelta (ticket)</td>
+                    <td className="z-ticket-tgt">{ticket ? `${signed(ticket.targetGain, 0)} $` : "—"}</td>
+                    <td className="z-ticket-stp">{ticket ? `${signed(ticket.stopLoss, 0)} $` : "—"}</td>
+                    <td><b>{pct(ticketBe)}</b></td>
+                  </tr>
+                  <tr>
+                    <td>Vertical (máx.)</td>
+                    <td className="z-ticket-tgt">+{v.maxGain.toFixed(0)} $</td>
+                    <td className="z-ticket-stp">−{v.maxLoss.toFixed(0)} $</td>
+                    <td><b>{pct(v.breakevenWinPct)}</b></td>
+                  </tr>
+                </tbody>
+              </table>
+              <p className="z-live-reason">{v.rationale}</p>
+            </>
+          ) : (
+            <p className="z-ticket-none">{spreads.verticalNote}</p>
+          )}
+
+          <div className="z-spr-sell">
+            <span className="z-ticket-k">Vender prima en los muros de gamma</span>
+            {credits.length === 0 && !spreads.ironCondor && <p className="z-ticket-none">{spreads.creditNote}</p>}
+            {credits.map((c) => (
+              <div key={c.side} className="z-spr-row">
+                <b>{c.side === "call" ? "Credit call" : "Credit put"} {px.format(c.shortStrike)}/{px.format(c.longStrike)}</b>
+                <span>crédito ${c.credit.toFixed(2)}</span>
+                <span className="z-ticket-tgt">+{c.maxGain.toFixed(0)} $</span>
+                <span className="z-ticket-stp">−{c.maxLoss.toFixed(0)} $</span>
+                <span>empata con {pct(c.breakevenWinPct)}</span>
+                {c.belowMinCredit && <span className="z-flag">crédito bajo: comisiones &gt;20%</span>}
+              </div>
+            ))}
+            {spreads.ironCondor ? (
+              <div className="z-spr-row">
+                <b>Iron condor {px.format(spreads.ironCondor.put.shortStrike)}–{px.format(spreads.ironCondor.call.shortStrike)}</b>
+                <span>crédito ${spreads.ironCondor.credit.toFixed(2)}</span>
+                <span className="z-ticket-tgt">+{spreads.ironCondor.maxGain.toFixed(0)} $</span>
+                <span className="z-ticket-stp">−{spreads.ironCondor.maxLoss.toFixed(0)} $</span>
+                <span>empata con {pct(spreads.ironCondor.breakevenWinPct)}</span>
+              </div>
+            ) : credits.length > 0 && (
+              <p className="z-ticket-none">{spreads.ironCondorNote}</p>
+            )}
+          </div>
+
+          <p className="z-ticket-foot">
+            Spreads a precio conservador (compra al ask, vende al bid) y netos de comisiones; el
+            ticket va al mid y con delta lineal, así que la comparación favorece a la opción suelta.
+            El "acierto para empatar" supone ganar o perder el máximo. El agente calcula y muestra;
+            tú decides y ejecutas. <b>No es una orden ni un consejo.</b>
           </p>
         </>
       )}
@@ -716,11 +843,91 @@ function ZeroGex({ a }: { a: ZeroDteAnalysis }) {
 // GEX Pinning
 // ---------------------------------------------------------------------------
 
-function ZeroPinning({ pin, ticker }: { pin: ZeroDtePinning; ticker: string }) {
+type Dir = "up" | "down" | null;
+
+const ARROW: Record<"up" | "down", string> = { up: "▲", down: "▼" };
+
+/** "$1.20B" / "$850M" a partir de millones. */
+function mocFormat(mln: number): string {
+  return mln >= 1000 ? `$${(mln / 1000).toFixed(2)}B` : `$${mln.toFixed(0)}M`;
+}
+
+function ZeroPinning({
+  pin, close, ticker, spot,
+}: {
+  pin: ZeroDtePinning;
+  close: ZeroDteClose | null;
+  ticker: string;
+  spot: number;
+}) {
+  // El MOC no lo sirve ninguna fuente (ni Tastytrade ni MarketSnack publican el
+  // imbalance de cierre), así que lo pega el usuario del dato de las 3:50pm ET.
+  // Vive SOLO en su navegador y atado a la sesión de HOY: el imbalance de ayer no
+  // dice nada del cierre de hoy, y dejarlo puesto invitaría a leerlo como vivo.
+  const [mocVal, setMocVal] = useState("");
+  const [mocSide, setMocSide] = useState<"buy" | "sell" | null>(null);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(MOC_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as { val?: string; side?: "buy" | "sell" | null; date?: string };
+      if (saved.date !== etTodayStr()) return;
+      setMocVal(saved.val ?? "");
+      setMocSide(saved.side ?? null);
+    } catch {
+      /* sin almacenamiento se empieza en blanco; no es motivo para romper la tarjeta */
+    }
+  }, []);
+
+  const saveMoc = useCallback((val: string, side: "buy" | "sell" | null) => {
+    setMocVal(val);
+    setMocSide(side);
+    try {
+      localStorage.setItem(MOC_KEY, JSON.stringify({ val, side, date: etTodayStr() }));
+    } catch {
+      /* no poder persistir no debe impedir usarlo en esta sesión */
+    }
+  }, []);
+
+  const mocNum = parseFloat(mocVal.replace(/[^0-9.]/g, ""));
+  const mocOk = Number.isFinite(mocNum) && mocNum > 0 && mocSide != null;
+  const mocDir: Dir = !mocOk ? null : mocSide === "buy" ? "up" : "down";
+
+  const charm = close?.charm ?? null;
+  const charmDir: Dir = charm?.dir ?? null;
+  const charmPct = charm != null ? Math.round(charm.intensity * 100) : 0;
+
+  // Dirección que implica el pin: hacia dónde arrastra el imán desde el precio de
+  // ahora. Menos de medio strike de diferencia no es una dirección, es ruido.
+  const step = close?.step ?? 1;
+  const pinTarget = pin.strike ?? pin.candidate;
+  const pinDir: Dir =
+    pinTarget == null || Math.abs(pinTarget - spot) < step / 2
+      ? null
+      : pinTarget > spot ? "up" : "down";
+
+  // La referencia de la confluencia la manda el pin; si no apunta a ningún lado,
+  // el charm; y si tampoco, el MOC. Solo se cuentan las señales PRESENTES: decir
+  // "1 de 3" cuando dos ni existen pintaría como desacuerdo lo que es silencio.
+  const ref: Dir = pinDir ?? charmDir ?? mocDir;
+  const signals: { key: string; label: string; dir: Dir }[] = [
+    { key: "pin", label: "pin", dir: pinDir },
+    { key: "charm", label: "charm", dir: charmDir },
+    { key: "moc", label: mocOk ? `MOC ${mocFormat(mocNum)}` : "MOC", dir: mocDir },
+  ];
+  const present = signals.filter((x) => x.dir != null);
+  const aligned = present.filter((x) => x.dir === ref);
+
   return (
     <section className={`z-close ${pin.inWindow ? "" : "z-close-pending"}`}>
       <div className="z-close-top">
         <span className="z-close-tag">GEX Pinning</span>
+        {close != null && pin.inWindow && (
+          <span className={`z-close-conf z-close-conf-${close.confidence}`}>
+            confianza {close.confidence}
+          </span>
+        )}
         <span className="z-close-min">
           {pin.inWindow
             ? "pronóstico en vigor (15:00-16:00 ET)"
@@ -743,8 +950,127 @@ function ZeroPinning({ pin, ticker }: { pin: ZeroDtePinning; ticker: string }) {
             {pin.candidate != null ? `candidato actual ${px.format(pin.candidate)}` : "sin candidato"}
           </span>
         </div>
+        {close?.maxPain != null && (
+          <div>
+            <span className="z-sum-lbl">Max Pain · OI</span>
+            <span className={`z-close-maxpain ${close.confluence ? "z-close-conflu" : ""}`}>
+              {px.format(close.maxPain)}
+            </span>
+            <span className="z-sum-sub">
+              {close.confluence
+                ? "coincide con el imán → pin más firme"
+                : "dónde duele menos a los compradores"}
+            </span>
+          </div>
+        )}
       </div>
-      <p className="z-close-note">{pin.note}</p>
+
+      {close != null && close.phase !== "final" && (
+        <div className="z-close-range">
+          <span className="z-sum-lbl">
+            Rango probable al cierre · ±1σ ({close.sigma.toFixed(2)} pts)
+          </span>
+          <div className="z-close-rends">
+            <span>{px.format(close.rangeLow)}</span>
+            <span className="z-close-rmid">{px.format(spot)}</span>
+            <span>{px.format(close.rangeHigh)}</span>
+          </div>
+        </div>
+      )}
+
+      {charm != null && (
+        <div className={`z-charm z-charm-${charmDir ?? "flat"}`}>
+          <div className="z-charm-top">
+            <span className="z-charm-w">
+              Charm al cierre ·{" "}
+              {charmDir === "up"
+                ? "el dealer recompra cobertura (empuje alcista)"
+                : charmDir === "down"
+                  ? "el dealer vende cobertura (empuje bajista)"
+                  : "sin empuje neto"}
+            </span>
+            <span className="z-charm-chip">intensidad {charmPct}%</span>
+          </div>
+          <div className="z-charm-bar">
+            <i style={{ width: `${charmPct}%` }} />
+          </div>
+          <p className="z-charm-note">
+            El charm crece como 1/T: a media sesión apenas pesa y en la última hora manda. Mide el
+            delta que se desvanece, no una orden vista.
+          </p>
+        </div>
+      )}
+
+      <div className="z-moc">
+        <div className="z-moc-head">
+          <span className="z-sum-lbl">MOC · imbalance de cierre</span>
+          <span className="z-moc-hint">
+            lo pegas tú del dato de las 3:50pm ET — ninguna fuente del agente lo sirve
+          </span>
+        </div>
+        <div className="z-moc-row">
+          <input
+            className="z-moc-in"
+            value={mocVal}
+            placeholder="1200"
+            inputMode="decimal"
+            aria-label="Imbalance de cierre en millones"
+            onChange={(e) => saveMoc(e.target.value, mocSide)}
+          />
+          <span className="z-moc-unit">MLN</span>
+          <span className="z-moc-toggle">
+            <button
+              type="button"
+              className={mocSide === "buy" ? "z-moc-buy" : ""}
+              onClick={() => saveMoc(mocVal, "buy")}
+            >
+              Compra
+            </button>
+            <button
+              type="button"
+              className={mocSide === "sell" ? "z-moc-sell" : ""}
+              onClick={() => saveMoc(mocVal, "sell")}
+            >
+              Venta
+            </button>
+          </span>
+          {mocOk && (
+            <span className="z-moc-tier">{mocNum >= MOC_STRONG_MLN ? "fuerte" : "moderado"}</span>
+          )}
+          {mocVal !== "" && (
+            <button
+              type="button"
+              className="z-moc-clear"
+              onClick={() => saveMoc("", null)}
+              aria-label="borrar"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      </div>
+
+      {present.length > 0 && (
+        <div className="z-confl">
+          <div className="z-confl-sigs">
+            {signals.map((x) => (
+              <span
+                key={x.key}
+                className={x.dir == null ? "z-sig-off" : x.dir === ref ? "z-sig-on" : "z-sig-clash"}
+              >
+                {x.dir != null ? `${ARROW[x.dir]} ` : ""}
+                {x.label}
+              </span>
+            ))}
+          </div>
+          <span className="z-confl-count">
+            {aligned.length} de {present.length} de acuerdo
+            {ref != null ? ` · ${ref === "up" ? "al alza" : "a la baja"}` : ""}
+          </span>
+        </div>
+      )}
+
+      <p className="z-close-note">{close?.note ?? pin.note}</p>
       <p className="z-outlook-caveat">
         Estimación del efecto de anclaje de los dealers, no una certeza. Una noticia o un cambio de
         régimen lo rompen. Tú decides.

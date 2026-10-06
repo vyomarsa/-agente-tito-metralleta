@@ -3,6 +3,8 @@ import type { ZeroDteReview } from "@/lib/zerodteStore";
 import type {
   ZeroDteBias, ZeroDtePinning, ZeroDteTicket, ZeroDteTradeCard,
 } from "@/lib/zerodteSignals";
+import type { ZeroDteSpreads } from "@/lib/zerodteSpreads";
+import type { ZeroDteClose } from "@/lib/zerodteClose";
 import type { ZeroDteTape } from "@/lib/zerodteTape";
 import type { ZeroDteScoreboard } from "@/lib/zerodteLiveStore";
 
@@ -17,9 +19,12 @@ export interface ZeroDteSignals {
   tradeAlt: ZeroDteTradeCard;
   ticket: ZeroDteTicket | null;
   ticketNote: string;
+  spreads: ZeroDteSpreads;
   bias: ZeroDteBias;
   biasAlt: ZeroDteBias;
   pinning: ZeroDtePinning;
+  /** Cierre de la última hora (Max Pain + charm). null fuera del vencimiento de hoy. */
+  close: ZeroDteClose | null;
 }
 
 export interface ZeroDteResponse {
@@ -34,6 +39,8 @@ export interface ZeroDteResponse {
   etMinute: number | null;
   spot: number;
   spotSource: "tastytrade" | "quote" | "paridad";
+  /** Fuente de la cadena: Tastytrade primero, MarketSnack de respaldo. */
+  chainSource: "tastytrade" | "marketsnack";
   change: number | null;
   changePercent: number | null;
   contractCount: number;
@@ -64,5 +71,6 @@ export type { ZeroDteStrike, ZeroDteLeg, ZeroDteWall, ZeroDteScenario } from "@/
 export type {
   ZeroDteBias, ZeroDtePinning, ZeroDteTicket, ZeroDteTradeCard,
 } from "@/lib/zerodteSignals";
+export type { ZeroDteClose, ZeroDteCharm } from "@/lib/zerodteClose";
 export type { ZeroDteTape, ZeroDteBlock } from "@/lib/zerodteTape";
 export type { ZeroDteScoreboard, BiasScore, TradeScore } from "@/lib/zerodteLiveStore";

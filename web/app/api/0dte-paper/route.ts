@@ -9,7 +9,9 @@
 // MISMO `scanZeroDte`, y el tick es idempotente por minuto — si los dos caen en
 // el mismo minuto, el segundo se encuentra el trabajo hecho.
 
-import { summarize, type ZeroPaperPosition } from "@/lib/zerodtePaper";
+import {
+  MAX_PERDIDAS_DIA, perdidasDelDia, pnlDelDia, summarize, type ZeroPaperPosition,
+} from "@/lib/zerodtePaper";
 import { loadClosed, loadOpen, tickZeroPaper } from "@/lib/zerodtePaperStore";
 import { ALLOWED, scanZeroDte, ZeroDteScanError } from "@/lib/zerodteScan";
 
@@ -24,8 +26,17 @@ function byClosedDesc(a: ZeroPaperPosition, b: ZeroPaperPosition): number {
 export async function GET() {
   try {
     const [open, closed] = await Promise.all([loadOpen(), loadClosed()]);
+    const now = new Date();
+    const perdidas = perdidasDelDia(closed, now);
     return Response.json({
       summary: summarize(closed, open),
+      // Estado del límite diario de HOY, para que la pantalla diga si todavía abre.
+      limiteDiario: {
+        perdidas,
+        tope: MAX_PERDIDAS_DIA,
+        alcanzado: perdidas >= MAX_PERDIDAS_DIA,
+        pnlHoy: pnlDelDia(closed, now),
+      },
       open,
       closed: [...closed].sort(byClosedDesc).slice(0, 100),
     });
@@ -93,6 +104,7 @@ export async function POST(request: Request) {
         reason: p.closeReason, pnl: p.realizedPnl,
       })),
       blocked: r.blocked,
+      notes: r.notes,
       summary: r.summary,
     });
   } catch (err) {

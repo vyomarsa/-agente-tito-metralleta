@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_LOSS_PCT, MAX_OPEN, MAX_PER_SECTOR, PROFIT_FLOOR_PCT, START_EQUITY,
   closePosition, dteOn, lossPct, managePosition, maxRiskOf, planOpen, pnlOf,
-  positionFrom, profitPct, reprice, sizeFor, sizeForBand, summarize,
+  positionFrom, profitPct, reprice, sizeFor, sizeForBand, summarize, valorAlVencimiento,
   RISK_PER_TRADE_PCT, RISK_PER_TRADE_MAX_PCT,
   type PrimaPosition,
 } from "./primaPaper";
@@ -36,7 +36,8 @@ function pos(over: Partial<PrimaPosition> = {}): PrimaPosition {
     type: "call_credit", shortStrike: 510, longStrike: 515, width: 5,
     expiration: VENCE, contracts: 1, entryCredit: 1.0, currentValue: 1.0,
     peakProfitPct: 0, shortDelta: 0.13, popPct: 88, status: "abierta",
-    closedAt: null, closeReason: null, realizedPnl: null, ...over,
+    // fees: 0 → estos tests prueban la lógica del plan; las comisiones van aparte.
+    closedAt: null, closeReason: null, realizedPnl: null, fees: 0, ...over,
   };
 }
 
@@ -412,5 +413,53 @@ describe("positionFrom guarda el riesgo asumido", () => {
   it("es opcional: las posiciones viejas nacieron sin él", () => {
     const p = positionFrom(cand(), 1, "VP-2", new Date("2026-08-24T15:45:00Z"));
     expect(p.riskPctUsed).toBeUndefined();
+  });
+});
+
+describe("valorAlVencimiento — liquidación de lo vencido", () => {
+  it("un put credit spread que vence OTM no vale nada: se gana el crédito entero", () => {
+    const p = pos({ type: "put_credit", shortStrike: 195, longStrike: 192.5, width: 2.5 });
+    expect(valorAlVencimiento(p, 220.78)).toBe(0);
+  });
+
+  it("un put credit spread que vence bajo la pata larga vale el ancho: pérdida máxima", () => {
+    const p = pos({ type: "put_credit", shortStrike: 195, longStrike: 192.5, width: 2.5 });
+    expect(valorAlVencimiento(p, 190)).toBe(2.5);
+  });
+
+  it("entre los dos strikes vale la parte intrínseca del corto", () => {
+    const p = pos({ type: "put_credit", shortStrike: 195, longStrike: 192.5, width: 2.5 });
+    expect(valorAlVencimiento(p, 194)).toBeCloseTo(1, 6);
+    expect(valorAlVencimiento(p, 193.5)).toBeCloseTo(1.5, 6);
+  });
+
+  it("justo EN el strike corto todavía no vale nada", () => {
+    const p = pos({ type: "put_credit", shortStrike: 195, longStrike: 192.5, width: 2.5 });
+    expect(valorAlVencimiento(p, 195)).toBe(0);
+  });
+
+  it("el call credit spread es el espejo", () => {
+    const p = pos({ type: "call_credit", shortStrike: 510, longStrike: 515, width: 5 });
+    expect(valorAlVencimiento(p, 500)).toBe(0);   // OTM
+    expect(valorAlVencimiento(p, 512)).toBeCloseTo(2, 6);
+    expect(valorAlVencimiento(p, 600)).toBe(5);   // más allá de la larga: tope
+  });
+
+  it("los TRES casos reales del 2026-09-07 salen ganadores", () => {
+    // Las tres posiciones que llevaban 7 y 10 días vencidas sin liquidar, con el
+    // cierre real de su día de vencimiento.
+    const nvda = pos({ type: "put_credit", shortStrike: 195, longStrike: 192.5, width: 2.5, contracts: 1, entryCredit: 0.295 });
+    const tsla = pos({ type: "put_credit", shortStrike: 330, longStrike: 327.5, width: 2.5, contracts: 1, entryCredit: 0.21 });
+    const qqq = pos({ type: "put_credit", shortStrike: 685, longStrike: 684, width: 1, contracts: 2, entryCredit: 0.07 });
+
+    const conValor = (p: PrimaPosition, s: number) => pnlOf(reprice(p, valorAlVencimiento(p, s)));
+    expect(conValor(nvda, 220.78)).toBeCloseTo(29.5, 6);
+    expect(conValor(tsla, 367.95)).toBeCloseTo(21, 6);
+    expect(conValor(qqq, 716.43)).toBeCloseTo(14, 6);
+  });
+
+  it("acota a [0, ancho] aunque los strikes vengan mal", () => {
+    const p = pos({ type: "put_credit", shortStrike: 195, longStrike: 192.5, width: 1 });
+    expect(valorAlVencimiento(p, 100)).toBe(1); // el bruto daría 2.5
   });
 });

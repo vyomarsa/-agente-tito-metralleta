@@ -4,6 +4,7 @@ import {
   intradayCandidate,
   selectCandidates,
   swingProbability,
+  quoteSymbolFor,
   SWING_TARGET_PCT,
   SWING_STOP_PCT,
   SWING_DTE_MIN,
@@ -142,5 +143,29 @@ describe("selectCandidates", () => {
       { ...base, ticker: "C", probability: 71 },
     ]);
     expect(out.map((c) => c.ticker)).toEqual(["B", "C", "A"]);
+  });
+});
+
+describe("quoteSymbolFor — la raíz de opción no es un ticker cotizable", () => {
+  it("traduce las raíces semanales de índice a su subyacente", () => {
+    expect(quoteSymbolFor("SPXW")).toBe("SPX");
+    expect(quoteSymbolFor("SPXPM")).toBe("SPX");
+    expect(quoteSymbolFor("NDXP")).toBe("NDX");
+    expect(quoteSymbolFor("VIXW")).toBe("VIX");
+  });
+
+  it("deja intacto lo que ya es un ticker", () => {
+    expect(quoteSymbolFor("AAPL")).toBe("AAPL");
+    expect(quoteSymbolFor("SPY")).toBe("SPY");
+    expect(quoteSymbolFor("SPX")).toBe("SPX");
+  });
+
+  it("normaliza espacios y minúsculas", () => {
+    expect(quoteSymbolFor(" spxw ")).toBe("SPX");
+  });
+
+  it("NO traduce RUTW: su propio RUT tampoco cotiza, así que no arreglaría nada", () => {
+    // Ese caso lo tapa el filtro de cotizables del escaneo, no esta tabla.
+    expect(quoteSymbolFor("RUTW")).toBe("RUTW");
   });
 });

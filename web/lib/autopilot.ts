@@ -10,7 +10,14 @@ import { dteOf } from "./optionChain2";
 
 // --- Umbrales y parámetros (tuneables) -------------------------------------
 export const MIN_PROB = 60; // no se toma un setup por debajo de esto
-export const DEFAULT_CONTRACTS = 1; // el sizing real vive en el navegador; AUTO abre 1
+/**
+ * Contratos con los que NACE un plan pendiente. Es un marcador de posición, no un
+ * tamaño: un pendiente todavía no tiene prima, así que no hay con qué dimensionar.
+ * El tamaño de verdad lo fija `sizeForSwing` AL ENTRAR (ver `evaluate` en
+ * lib/paperTrade). Hasta el 2026-08-28 este 1 era el tamaño definitivo y la bitácora
+ * acabó con un put de $29.620 en una cuenta de $10.000.
+ */
+export const DEFAULT_CONTRACTS = 1;
 
 // Swing: niveles derivados del precio del subyacente al momento del flujo.
 export const SWING_TRIGGER_PCT = 0.3; // gatillo = pequeño breakout de confirmación
@@ -29,6 +36,41 @@ export const SWING_STOP_PCT = 2; // stop (%) → riesgo:recompensa ~1:2
  */
 export const SWING_DTE_MIN = 7;
 export const SWING_DTE_MAX = 120;
+
+/**
+ * Ticker del plan → símbolo con el que SE COTIZA el subyacente, cuando no coinciden.
+ *
+ * POR QUÉ EXISTE. El piloto copia el `underlying` que le da el flujo de MarketSnack, y
+ * para las opciones semanales de índice eso NO es un ticker: es la **raíz de la opción**
+ * (`SPXW`, `NDXP`, `SPXPM`, `VIXW`). Ninguna cotiza — verificado el 2026-08-28 contra el
+ * streamer: `SPXW`, `NDXP`, `SPXPM` y `VIXW` devuelven `null`, mientras `SPX`, `NDX` y
+ * `VIX` cotizan sin problema. Como `evaluate` necesita el precio del subyacente para
+ * cruzar el gatillo, esos planes **no podían activarse nunca**: nacían, bloqueaban su
+ * ticker siete días por la regla de "una entrada por ticker" y morían caducados. En el
+ * libro son **8 de 8 planes de índice sin una sola entrada**, 7 de ellos caducados.
+ *
+ * Solo se traduce PARA COTIZAR. El `ticker` del plan se queda como está a propósito,
+ * porque es lo que identifica el contrato: la cadena resuelve igual por las dos vías
+ * (comprobado, `SPXW` y `SPX` devuelven los mismos 2.500 contratos), así que renombrar
+ * no arreglaría nada y sí arriesgaría perder la correspondencia con el flujo original.
+ * Mismo criterio que `STREAMER_UNDERLYING` en lib/tastytrade.
+ *
+ * OJO — `RUTW` NO está aquí: su subyacente `RUT` **tampoco cotiza**, así que traducirlo
+ * no serviría de nada. Ese caso lo tapa el filtro de cotizables del escaneo, que es la
+ * red de seguridad general; esta tabla solo cubre lo que sí tiene traducción buena.
+ */
+export const QUOTE_UNDERLYING: Record<string, string> = {
+  SPXW: "SPX",
+  SPXPM: "SPX",
+  NDXP: "NDX",
+  VIXW: "VIX",
+};
+
+/** Símbolo con el que pedir el precio del subyacente de un plan. */
+export function quoteSymbolFor(ticker: string): string {
+  const clean = ticker.trim().toUpperCase();
+  return QUOTE_UNDERLYING[clean] ?? clean;
+}
 
 // Intradía: objetivo = imán del GEX; stop = fracción de la distancia al imán.
 export const INTRADAY_TRIGGER_PCT = 0.1;

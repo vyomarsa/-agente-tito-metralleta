@@ -26,7 +26,8 @@
 //
 // Diferencias críticas vs. Wheel (no copiar a ciegas):
 //   · El crédito se calcula sobre el MID, no sobre el bid con haircut.
-//   · Son DOS patas emparejadas por ancho adaptativo $1–$5 (el más estrecho del grid).
+//   · Son DOS patas emparejadas por ancho adaptativo $1–$5 (el más estrecho del grid
+//     que llega al crédito mínimo, ver MIN_CREDIT).
 //   · El delta es el REAL de MarketSnack (el prompt prohíbe estimarlo).
 //   · No hay regla de crédito% por delta: la delta baja y el 1σ hacen ese trabajo.
 
@@ -34,6 +35,7 @@ import { expectedMove } from "./expectedMove";
 import { realizedVolSeries, rankWithin } from "./ivcontext";
 import type { EarningsFlag } from "./earnings";
 import type { MacroEvent, MacroEventKind } from "./macroCalendar";
+import { commissionOf } from "./commissions";
 
 const MULTIPLIER = 100;
 
@@ -85,10 +87,11 @@ export const LONG_DELTA_MAX = 0.05;
 // spread de $1–$2 es geométricamente IMPOSIBLE de armar y el escáner descartaba
 // ~78% de las patas cortas por "sin pata larga en el ancho" (medido ago 2026, no
 // por 1σ ni macro). La regla real que pedía el operador es "el spread MÁS CEÑIDO":
-// `pickLongLeg` elige la pata larga del strike OTM más CERCANO (ancho mínimo), y el
-// techo sube a $5 solo para admitir el paso de grid más ancho ($5). En un nombre con
-// grid de $1 sigue saliendo un spread de $1; el techo nunca fuerza un spread ancho,
-// solo evita que un hueco de strikes arme algo absurdo. El riesgo por contrato sigue
+// `longLegsByWidth` ordena las patas largas de la más CERCANA a la más lejana y se
+// toma la primera que paga el crédito mínimo (ver MIN_CREDIT). El techo sube a $5
+// para admitir el paso de grid más ancho. En un nombre con grid de $1 sale un spread
+// de $1 si ya paga; el techo nunca fuerza un spread más ancho de lo necesario, solo
+// evita que un hueco de strikes arme algo absurdo. El riesgo por contrato sigue
 // acotado aguas abajo por el sizing (2–3% del capital) del cliente.
 export const WIDTH_MIN = 1.0;
 export const WIDTH_MAX = 5.0;
@@ -100,6 +103,36 @@ export const WIDTH_MAX = 5.0;
 export const MAX_LEG_SPREAD_PCT = 0.20; // bid-ask de la PATA CORTA ≤20% del mid
 export const MIN_LEG_OI = 250; // OI mínimo de la PATA CORTA (valor del bot Venta Prima)
 export const MAX_SPREAD_CONSUMES_CREDIT = 0.30; // bid-ask de la CORTA / crédito
+
+/**
+ * CRÉDITO MÍNIMO (2026-09-17, a pedido del dueño).
+ *
+ * Las comisiones van POR CONTRATO, no por ancho: un credit spread paga 2 patas ×
+ * $0,65 al abrir y otra vez al cerrar, $2,60 por spread ida y vuelta, lleve $1 o $5
+ * de ancho. Con los créditos que abría la cuenta —$0,035 a $0,07 en los $1 de
+ * SPY/QQQ/NFLX/NKE— eso era del 19% al 74% del crédito, y en el libro se comió
+ * más de la mitad de la ganancia (+$54 bruto → +$25 neto en 8 cierres). Además, en
+ * un crédito de $0,07 un solo céntimo de horquilla es el 14%: el llenado al mid del
+ * simulador es justo donde más se aleja de lo que da TOS.
+ *
+ * Por eso el mínimo se DERIVA de la tarifa: las comisiones de ida y vuelta no pueden
+ * pasar del 20% del crédito → $2,60 / 0,20 = $13 por contrato = **$0,13 por acción**.
+ * Si cambia la tarifa en `commissions.ts`, el mínimo se mueve solo.
+ *
+ * POR QUÉ NO UN % DEL ANCHO (lo que se sugirió en la auditoría): a delta 0,10–0,15
+ * el crédito justo ronda el 6–8% del ancho — de las 11 posiciones del libro solo UNA
+ * superaba el 10%. Un mínimo así dejaría la estrategia sin operaciones. El problema
+ * no era el crédito relativo sino cuántos contratos pagan comisión por él.
+ *
+ * NO DESCARTA LA PATA CORTA de golpe: si el spread más ceñido no llega, se prueba el
+ * siguiente ancho (ver `longLegsByWidth`). Mismo crédito total con menos contratos =
+ * la mitad de comisiones: un SPY que antes eran 2× $1 a $0,07 pasa a 1× $2 a ~$0,14.
+ * El riesgo por contrato sube, pero el dimensionamiento (2–3% del capital) lo acota.
+ * Es un filtro ESTRUCTURAL: aplica también en modo experto.
+ */
+export const MAX_COMISION_SOBRE_CREDITO = 0.20;
+export const MIN_CREDIT =
+  Math.ceil((commissionOf(1, 2, true) / MAX_COMISION_SOBRE_CREDITO / MULTIPLIER) * 100) / 100;
 const EPS = 1e-6;
 
 // ── Niveles (soporte/resistencia) ────────────────────────────────────────
@@ -402,7 +435,7 @@ export interface CreditSpreadInput {
   supports: SpreadLevel[];
   /** Resistencias (findLevels), para respaldar el strike corto de los call spreads. */
   resistances: SpreadLevel[];
-  /** Estado de earnings dentro del vencimiento (estimador de earningsForTicker). */
+  /** Estado de earnings dentro del vencimiento (fecha REAL de Tastytrade, ver lib/earnings). */
   earnings: EarningsFlag;
   /** Eventos macro DENTRO de la ventana del trade (ya filtrados por la ruta). */
   macroEvents: MacroEvent[];
@@ -446,42 +479,38 @@ function toLeg(q: SpreadQuote, m: number): SpreadLeg {
 }
 
 /**
- * Elige la pata larga: mismo tipo, más OTM que la corta, ancho dentro de
- * [WIDTH_MIN, WIDTH_MAX]. ADAPTATIVO al grid: prefiere el spread MÁS ESTRECHO
- * posible (la pata OTM más cercana), que es el riesgo definido mínimo para ese
- * subyacente. A igualdad de ancho, desempata por el delta largo objetivo 0.02–0.05
- * (cercanía al punto medio 0.035 → protección barata). Así un nombre con grid de $1
- * arma un spread de $1 y uno con grid de $5 arma el de $5 (el más ceñido que existe),
- * sin que el techo fuerce nunca un spread más ancho de lo necesario.
+ * Patas largas posibles, de la MÁS CEÑIDA a la más ancha: mismo tipo, más OTM que la
+ * corta, ancho dentro de [WIDTH_MIN, WIDTH_MAX]. Una por ancho: a igualdad de ancho
+ * gana el delta más cercano al objetivo 0.02–0.05 (punto medio 0.035 → protección
+ * barata).
+ *
+ * `buildStructure` toma la PRIMERA que llega a `MIN_CREDIT`: el spread más ceñido que
+ * paga sus comisiones. Antes solo existía la más ceñida (un nombre con grid de $1
+ * armaba siempre $1), y con el crédito mínimo eso descartaba justo los ETFs, que son
+ * los que mejor caben en el capital. El techo sigue sin forzar nunca un spread más
+ * ancho de lo necesario: solo se ensancha cuando el estrecho no paga.
  */
-function pickLongLeg(
+function longLegsByWidth(
   type: SpreadType,
   shortStrike: number,
   candidates: SpreadQuote[],
-): SpreadQuote | null {
-  const moreOtm = candidates
-    .map((q) => ({
-      q,
-      width: type === "put" ? shortStrike - q.strike : q.strike - shortStrike,
-    }))
-    .filter(
-      ({ q, width }) =>
-        q.type === type &&
-        width >= WIDTH_MIN - EPS &&
-        width <= WIDTH_MAX + EPS &&
-        mid(q.bid, q.ask) != null,
-    );
-  if (moreOtm.length === 0) return null;
+): SpreadQuote[] {
   const IDEAL = (LONG_DELTA_MIN + LONG_DELTA_MAX) / 2; // 0.035
-  return moreOtm.reduce((best, cur) => {
-    // Ancho mínimo manda; a igualdad (±$0.01), el delta más cercano al objetivo.
-    if (cur.width < best.width - 0.01) return cur;
-    if (cur.width > best.width + 0.01) return best;
-    return Math.abs(Math.abs(cur.q.delta ?? 0) - IDEAL) <
-      Math.abs(Math.abs(best.q.delta ?? 0) - IDEAL)
-      ? cur
-      : best;
-  }).q;
+  const porAncho = new Map<number, { q: SpreadQuote; width: number }>();
+  for (const q of candidates) {
+    const width = type === "put" ? shortStrike - q.strike : q.strike - shortStrike;
+    if (q.type !== type || width < WIDTH_MIN - EPS || width > WIDTH_MAX + EPS) continue;
+    if (mid(q.bid, q.ask) == null) continue;
+    const clave = Math.round(width * 100);
+    const ya = porAncho.get(clave);
+    if (
+      !ya ||
+      Math.abs(Math.abs(q.delta ?? 0) - IDEAL) < Math.abs(Math.abs(ya.q.delta ?? 0) - IDEAL)
+    ) {
+      porAncho.set(clave, { q, width });
+    }
+  }
+  return [...porAncho.values()].sort((a, b) => a.width - b.width).map((x) => x.q);
 }
 
 /**
@@ -506,6 +535,8 @@ export function buildStructure(input: {
   expert?: boolean;
   /** Avisos a nivel escaneo (macro/tendencia degradados) que hereda el candidato. */
   baseWarnings?: string[];
+  /** Contador de descartes por crédito mínimo, para el motivo del escaneo. */
+  diag?: { creditoBajo: number };
 }): SpreadCandidate | null {
   const { ticker, sector, type, spot, short } = input;
 
@@ -516,16 +547,30 @@ export function buildStructure(input: {
   const shortMid = mid(short.bid, short.ask);
   if (shortMid == null) return null;
 
-  const longQ = pickLongLeg(type, short.strike, input.chain.filter((q) => q.expiration === short.expiration));
-  if (!longQ) return null;
-  const longMid = mid(longQ.bid, longQ.ask);
-  if (longMid == null) return null;
+  const largas = longLegsByWidth(
+    type, short.strike, input.chain.filter((q) => q.expiration === short.expiration),
+  );
+  if (largas.length === 0) return null;
 
-  const width = type === "put" ? short.strike - longQ.strike : longQ.strike - short.strike;
-  if (!(width >= WIDTH_MIN - EPS && width <= WIDTH_MAX + EPS)) return null;
-
-  const credit = shortMid - longMid;
-  if (!(credit > 0)) return null; // tiene que ser un crédito real
+  // El spread MÁS CEÑIDO que paga sus comisiones (ver MIN_CREDIT).
+  let elegida: { longQ: SpreadQuote; longMid: number; width: number; credit: number } | null = null;
+  let huboCredito = false;
+  for (const q of largas) {
+    const m = mid(q.bid, q.ask);
+    if (m == null) continue;
+    const w = type === "put" ? short.strike - q.strike : q.strike - short.strike;
+    const c = shortMid - m;
+    if (!(c > 0)) continue; // tiene que ser un crédito real
+    huboCredito = true;
+    if (c >= MIN_CREDIT - EPS) { elegida = { longQ: q, longMid: m, width: w, credit: c }; break; }
+  }
+  if (!elegida) {
+    // Había crédito, pero en ningún ancho llegaba al mínimo: se cuenta para que el
+    // escaneo lo diga en vez de caer al motivo genérico (regla de "no silent caps").
+    if (huboCredito && input.diag) input.diag.creditoBajo += 1;
+    return null;
+  }
+  const { longQ, longMid, width, credit } = elegida;
   const creditPct = (credit / width) * 100;
 
   // Liquidez de contrato — centrada en la PATA CORTA (venta de prima). La pata larga
@@ -750,6 +795,7 @@ export function creditSpreadCandidates(input: CreditSpreadInput): SpreadScan {
   // IV Rank: el REAL de Tastytrade si viene; si no, el proxy de vol realizada.
   const ivRank = input.realIvRank ?? ivRankProxy(input.closes);
   const out: SpreadCandidate[] = [];
+  const diag = { creditoBajo: 0 };
   for (const type of allowed) {
     // Candidatos de pata corta: del tipo, en banda 0.10–0.15, ordenados por delta
     // ascendente (priorizar el delta MÁS BAJO que cumpla todo).
@@ -776,6 +822,7 @@ export function creditSpreadCandidates(input: CreditSpreadInput): SpreadScan {
         softMacroEvents,
         expert: input.expert,
         baseWarnings: expertWarnings,
+        diag,
       });
       if (cand) out.push(cand);
     }
@@ -785,7 +832,10 @@ export function creditSpreadCandidates(input: CreditSpreadInput): SpreadScan {
     return {
       ...base,
       status: "sin_candidatos",
-      reason: "Ningún strike cumple 1σ/soporte-resistencia/liquidez en la ventana",
+      reason:
+        diag.creditoBajo > 0
+          ? `Ningún strike cumple: ${diag.creditoBajo} con crédito < $${MIN_CREDIT.toFixed(2)} en todos los anchos (las comisiones se comerían >${Math.round(MAX_COMISION_SOBRE_CREDITO * 100)}%); el resto por 1σ/soporte-resistencia/liquidez`
+          : "Ningún strike cumple 1σ/soporte-resistencia/liquidez en la ventana",
     };
   }
 

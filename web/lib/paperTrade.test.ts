@@ -9,7 +9,10 @@ import {
   isPriced,
   intrinsicValue,
   outcomeOf,
+  sizeForSwing,
+  equityOf,
   TRAIL_LOCK_FRACTION,
+  START_EQUITY,
   type PaperTrade,
 } from "./paperTrade";
 
@@ -40,6 +43,9 @@ function trade(over: Partial<PaperTrade> = {}): PaperTrade {
     currentPrice: null,
     updatedAt: null,
     closeReason: null,
+    // Sin comisiones por defecto: estos tests prueban la lógica del plan. Las
+    // comisiones tienen su propio bloque al final.
+    fees: 0,
     verdict: null,
     ...over,
   };
@@ -234,7 +240,8 @@ describe("cierre sin prima fresca — no se inventa el precio de salida", () => 
     const s = summarize([t]);
     expect(s.priced).toBe(1);
     expect(s.unpriced).toBe(0);
-    expect(s.closedPnl).toBeCloseTo((1.6 - 0.91) * 100 * 10, 6);
+    // Neto: 10 contratos × $0,65 × 2 órdenes (entrada y salida) = $13.
+    expect(s.closedPnl).toBeCloseTo((1.6 - 0.91) * 100 * 10 - 13, 6);
   });
 });
 
@@ -451,5 +458,205 @@ describe("win rate con dinero vs por plan", () => {
     const s = summarize([trade({ id: "c", status: "expirada", closeReason: "caducada", entryPrice: null, exitPrice: null })]);
     expect(s.winRatePct).toBeNull();
     expect(s.winRatePricedPct).toBeNull();
+  });
+});
+
+describe("sizeForSwing — la banda 2–3% del capital", () => {
+  it("dimensiona al borde BAJO cuando entran varios contratos", () => {
+    // $10.000 × 2% = $200 de riesgo; una prima de $0,50 cuesta $50 el contrato.
+    const r = sizeForSwing(0.5, 10_000);
+    expect(r.contracts).toBe(4);
+    expect(r.riskPct).toBeCloseTo(0.02, 4);
+  });
+
+  it("estira al 3% para UN contrato cuando al 2% no cabe ninguno", () => {
+    // $250 el contrato: no cabe en $200 (2%) pero sí en $300 (3%).
+    const r = sizeForSwing(2.5, 10_000);
+    expect(r.contracts).toBe(1);
+    expect(r.riskPct).toBeCloseTo(0.025, 4);
+  });
+
+  it("NUNCA estira para poner más de uno", () => {
+    // Al 3% cabrían 2 contratos de $140, pero el estirón es solo para el primero.
+    // Al 2% caben 1,43 → 1, y ese 1 sale del borde bajo, no del alto.
+    expect(sizeForSwing(1.4, 10_000).contracts).toBe(1);
+  });
+
+  it("devuelve 0 cuando ni un contrato cabe en el 3%", () => {
+    const r = sizeForSwing(5, 10_000); // $500 > $300
+    expect(r.contracts).toBe(0);
+    expect(r.riskPct).toBe(0);
+  });
+
+  it("el caso REAL que motivó todo: SNDK a $296,20 en una cuenta de $10.000", () => {
+    // $29.620 el contrato — casi 3× la cuenta entera. El libro lo tenía abierto.
+    expect(sizeForSwing(296.2, 10_000).contracts).toBe(0);
+  });
+
+  it("prima o capital no positivos no dimensionan nada", () => {
+    expect(sizeForSwing(0, 10_000).contracts).toBe(0);
+    expect(sizeForSwing(1, 0).contracts).toBe(0);
+  });
+});
+
+describe("equityOf — el capital se DERIVA de la bitácora", () => {
+  const dim = (over: Partial<PaperTrade>) => trade({ riskPctUsed: 0.02, ...over });
+
+  it("parte del capital inicial y suma solo los cierres CON precio", () => {
+    const libro = [
+      dim({ id: "a", status: "ganada", entryPrice: 1, exitPrice: 2, contracts: 1 }), // +$100
+      dim({ id: "b", status: "perdida", entryPrice: 2, exitPrice: 1, contracts: 1 }), // -$100
+      dim({ id: "c", status: "expirada", entryPrice: 3, exitPrice: null }), // sin precio: no suma
+      dim({ id: "d", status: "activa", entryPrice: 5, exitPrice: null }), // abierta: no suma
+    ];
+    expect(equityOf(libro)).toBe(START_EQUITY);
+  });
+
+  it("un libro vacío vale el capital de partida", () => {
+    expect(equityOf([])).toBe(START_EQUITY);
+  });
+
+  it("IGNORA los cierres SIN dimensionar: son el bug, no una cuenta", () => {
+    // La forma del libro real: 1 contrato de una prima imposible, −$12.630 sobre
+    // $10.000. Si contara, el capital saldría negativo y sizeForSwing daría 0
+    // contratos para siempre — un bug de medición apagando el agente en silencio.
+    const viejo = trade({ status: "perdida", entryPrice: 296.2, exitPrice: 170, contracts: 1 });
+    expect(viejo.riskPctUsed).toBeUndefined();
+    expect(equityOf([viejo])).toBe(START_EQUITY);
+    expect(sizeForSwing(0.5, equityOf([viejo])).contracts).toBe(4); // sigue operando
+  });
+
+  it("pero closedPnl SÍ los sigue sumando: no se borra ni se esconde nada", () => {
+    const viejo = trade({
+      status: "perdida", closeReason: "stop", entryPrice: 296.2, exitPrice: 170, contracts: 1,
+    });
+    const s = summarize([viejo]);
+    expect(s.closedPnl).toBeCloseTo(-12_620, 0);
+    expect(s.equity).toBe(START_EQUITY);
+    expect(s.unsizedClosed).toBe(1);
+  });
+});
+
+describe("dimensionamiento al ENTRAR (el bug de los 74 trades con 1 contrato)", () => {
+  const auto = (over: Partial<PaperTrade> = {}) =>
+    trade({ source: "auto", contracts: 1, ...over });
+
+  it("un AUTO se dimensiona al cruzar el gatillo, no se queda en 1", () => {
+    const t = evaluate(auto(), 296.0, 0.5, NOW, null, 10_000);
+    expect(t.status).toBe("activa");
+    expect(t.entryPrice).toBe(0.5);
+    expect(t.contracts).toBe(4); // $200 / $50
+    expect(t.riskPctUsed).toBeCloseTo(0.02, 4);
+  });
+
+  it("si no cabe ni un contrato NO entra: se cierra como sin_tamano y libera el ticker", () => {
+    const t = evaluate(auto(), 296.0, 296.2, NOW, null, 10_000);
+    expect(t.status).toBe("expirada");
+    expect(t.closeReason).toBe("sin_tamano");
+    expect(t.entryPrice).toBeNull(); // nunca entró
+    expect(t.exitPrice).toBeNull(); // así que no hay P&L que inventar
+    expect(t.verdict).toContain("no cabía");
+  });
+
+  it("un sin_tamano NO cuenta ni como acierto ni como fallo", () => {
+    const t = evaluate(auto(), 296.0, 296.2, NOW, null, 10_000);
+    expect(outcomeOf(t)).toBe("sin_decidir");
+    const s = summarize([t]);
+    expect(s.wins).toBe(0);
+    expect(s.losses).toBe(0);
+    expect(s.winRatePct).toBeNull();
+    expect(s.sinTamano).toBe(1);
+  });
+
+  it("un trade MANUAL conserva los contratos que tecleó el dueño", () => {
+    // Mismo precio imposible que arriba: en manual entra igual, con sus 10 contratos.
+    const t = evaluate(trade({ source: "manual", contracts: 10 }), 296.0, 296.2, NOW, null, 10_000);
+    expect(t.status).toBe("activa");
+    expect(t.contracts).toBe(10);
+    expect(t.riskPctUsed).toBeUndefined();
+  });
+
+  it("el capital que dimensiona es el de la cuenta, no una constante", () => {
+    // Con la cuenta a la mitad, la misma prima da la mitad de contratos.
+    const grande = evaluate(auto(), 296.0, 0.5, NOW, null, 10_000);
+    const chica = evaluate(auto(), 296.0, 0.5, NOW, null, 5_000);
+    expect(grande.contracts).toBe(4);
+    expect(chica.contracts).toBe(2);
+  });
+
+  it("sin capital pasado se usa el de partida (libro vacío y tests)", () => {
+    const t = evaluate(auto(), 296.0, 0.5, NOW);
+    expect(t.contracts).toBe(4);
+  });
+});
+
+describe("summarize expone el capital simulado", () => {
+  it("capital = partida + P&L de los cierres DIMENSIONADOS", () => {
+    const s = summarize([
+      trade({
+        status: "ganada", closeReason: "objetivo",
+        entryPrice: 1, exitPrice: 3, contracts: 2, riskPctUsed: 0.02,
+      }),
+    ]);
+    expect(s.startEquity).toBe(START_EQUITY);
+    expect(s.equity).toBe(START_EQUITY + 400);
+    expect(s.unsizedClosed).toBe(0);
+  });
+});
+
+describe("invalidada — el pendiente que cruza su propio stop antes del gatillo", () => {
+  // Plan al alza: entra en 296, objetivo 297, stop 295.
+  it("cruzar el stop estando pendiente lo cierra y LIBERA el ticker", () => {
+    const t = evaluate(trade(), 294.5, 0.9, NOW); // 294.5 <= stop 295
+    expect(t.status).toBe("expirada");
+    expect(t.closeReason).toBe("invalidada");
+    expect(t.entryPrice).toBeNull();
+    expect(t.exitPrice).toBeNull();
+    expect(t.verdict).toContain("cruzó el stop");
+  });
+
+  it("no cuenta ni como acierto ni como fallo: nunca se probó", () => {
+    const t = evaluate(trade(), 294.5, 0.9, NOW);
+    expect(outcomeOf(t)).toBe("sin_decidir");
+    const s = summarize([t]);
+    expect(s.wins).toBe(0);
+    expect(s.losses).toBe(0);
+    expect(s.invalidadas).toBe(1);
+  });
+
+  it("entre el stop y el gatillo sigue esperando, como siempre", () => {
+    const t = evaluate(trade(), 295.5, 0.9, NOW);
+    expect(t.status).toBe("pendiente");
+    expect(t.closeReason).toBeNull();
+  });
+
+  it("el GATILLO manda sobre la invalidación: si disparó, disparó", () => {
+    // Se comprueba con un plan a la baja, donde el orden es visible: gatillo 294
+    // (por debajo) y stop 297 (por encima). A 293 cruza el gatillo.
+    const bajista = trade({ direction: "down", trigger: 294, target: 290, stop: 297 });
+    const t = evaluate(bajista, 293, 0.9, NOW);
+    expect(t.status).toBe("activa");
+    expect(t.closeReason).toBeNull();
+  });
+
+  it("un plan a la BAJA se invalida cuando el precio SUBE hasta su stop", () => {
+    const bajista = trade({ direction: "down", trigger: 294, target: 290, stop: 297 });
+    const t = evaluate(bajista, 297.5, 0.9, NOW);
+    expect(t.closeReason).toBe("invalidada");
+  });
+
+  it("sin precio del subyacente NO se invalida: no se decide sobre un dato ausente", () => {
+    const t = evaluate(trade(), null, null, NOW);
+    expect(t.status).toBe("pendiente");
+    expect(t.closeReason).toBeNull();
+  });
+
+  it("la forma del caso REAL: SNDK necesitaba un +32% de vuelta al gatillo", () => {
+    // Put a la baja creado con el índice en ~1215; el subyacente se fue a 1786.
+    const sndk = trade({
+      ticker: "SNDK", direction: "down", trigger: 1211.79, target: 1167, stop: 1240,
+    });
+    const t = evaluate(sndk, 1786.85, 5, NOW);
+    expect(t.closeReason).toBe("invalidada"); // antes esperaba 7 días bloqueando SNDK
   });
 });

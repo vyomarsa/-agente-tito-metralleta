@@ -15,18 +15,24 @@
 // necesitan la cinta y el sesgo alterno, que son cosas de pantalla. El cron corre
 // cada minuto durante toda la sesión, así que pedirlo ahí multiplicaría la carga
 // contra MarketSnack sin cambiar una sola decisión de la cuenta.
+//
+// FUENTES (2026-09-17): vencimientos y cadena por la cascada Tastytrade →
+// MarketSnack de `lib/frontChain`. Antes eran SOLO MarketSnack, y sin su cookie
+// el 0DTE y su cuenta de paper se caían aunque Tastytrade estuviera sirviendo.
 // ============================================================================
 
 import { fetchCompany } from "./massive";
 import { cachedDailyBars } from "./barsStore";
 import { fetchTastytradeSpot } from "./tastytrade";
-import { fetchExpirations, fetchOptionChain2 } from "./marketsnack";
-import { normalizeChain2, dteOf, type Chain2Contract } from "./optionChain2";
+import { FrontChainError, fetchChainsByDate, listExpirations, type FrontSource } from "./frontChain";
+import { dteOf, type Chain2Contract } from "./optionChain2";
 import { buildZeroDte, estimateSpotFromChain, type ZeroDteAnalysis } from "./zerodte";
+import { closeForecast, type ZeroDteClose } from "./zerodteClose";
 import {
   gexTicket, magnetTrade, momentumTrade, pinning,
   type ZeroDtePinning, type ZeroDteTicket, type ZeroDteTrade, type ZeroDteTradeCard,
 } from "./zerodteSignals";
+import { zeroDteSpreads, type ZeroDteSpreads } from "./zerodteSpreads";
 
 export const TRADING_MINUTES = 390; // 9:30–16:00 ET
 export const OPEN_MIN = 9 * 60 + 30;
@@ -74,6 +80,8 @@ export interface ZeroDteScan {
   contracts: Chain2Contract[];
   spot: number;
   spotSource: "tastytrade" | "quote" | "paridad";
+  /** De dónde salió la cadena. */
+  chainSource: FrontSource;
   change: number | null;
   changePercent: number | null;
   minutesLeft: number;
@@ -86,7 +94,11 @@ export interface ZeroDteScan {
   activeTrade: ZeroDteTrade | null;
   ticket: ZeroDteTicket | null;
   ticketNote: string;
+  /** La misma tesis con riesgo definido: vertical de débito, credit spreads e iron condor. */
+  spreads: ZeroDteSpreads;
   pinning: ZeroDtePinning;
+  /** Cierre de la última hora: Max Pain + charm. null si no es el vencimiento de hoy. */
+  close: ZeroDteClose | null;
   /** Mid por símbolo de contrato, para re-cotizar posiciones abiertas. */
   priceOf: (optionSymbol: string) => number | null;
 }
@@ -102,14 +114,18 @@ export async function scanZeroDte(
   requestedExp: string,
   now: Date,
 ): Promise<ZeroDteScan> {
-  const expirations = await fetchExpirations(ticker);
-  if (expirations.length === 0) {
+  let dates: string[];
+  try {
+    dates = (await listExpirations(ticker)).dates;
+  } catch (e) {
+    throw e instanceof FrontChainError ? new ZeroDteScanError(e.message) : e;
+  }
+  if (dates.length === 0) {
     throw new ZeroDteScanError(
-      `MarketSnack no devolvió vencimientos para ${ticker}. ${ticker === "SPX" ? "SPX es experimental: prueba SPY o QQQ." : ""}`.trim(),
+      `No hay vencimientos para ${ticker}. ${ticker === "SPX" ? "SPX es experimental: prueba SPY o QQQ." : ""}`.trim(),
     );
   }
 
-  const dates = expirations.map((e) => e.date).sort((a, b) => a.localeCompare(b));
   const futureDates = dates.filter((d) => dteOf(d, now) >= 0);
   const available = futureDates.slice(0, MAX_EXPIRATIONS).map((d) => ({ date: d, dte: dteOf(d, now) }));
 
@@ -120,11 +136,15 @@ export async function scanZeroDte(
   const isToday = expiration === todayExp;
   const selectedDte = dteOf(expiration, now);
 
-  const [rawChain, ttSpot, company, bars] = await Promise.all([
-    fetchOptionChain2(ticker, expiration),
-    // Precio EN VIVO por el streamer de Tastytrade: es una suscripción de un solo
-    // símbolo (~2 s) y sirve también los índices (SPX), que Massive no cotiza.
-    fetchTastytradeSpot(ticker).catch(() => null),
+  const [chain, company, bars] = await Promise.all([
+    // Con Tastytrade la cadena trae el spot EN VIVO por la misma conexión (y sirve
+    // también SPX, que Massive no cotiza). Si la cadena sale de MarketSnack, el spot
+    // se pide aparte al streamer, que puede estar sano aunque su cadena no llegara.
+    fetchChainsByDate(ticker, [expiration])
+      .then(async (r) => ({ ...r, spot: r.spot ?? (await fetchTastytradeSpot(ticker).catch(() => null)) }))
+      .catch((e) => {
+        throw e instanceof FrontChainError ? new ZeroDteScanError(e.message) : e;
+      }),
     fetchCompany(ticker).catch(() => null),
     // Por el CACHE de disco, NO por Massive directo. `fetchDailyBars` con
     // `.catch(() => [])` devolvía [] en silencio cuando se agotaba la cuota (5
@@ -134,7 +154,8 @@ export async function scanZeroDte(
     cachedDailyBars(ticker, 60, now).catch(() => [] as { close: number }[]),
   ]);
 
-  const contracts = normalizeChain2(rawChain);
+  const contracts = chain.byDate.get(expiration) ?? [];
+  const ttSpot = chain.spot;
   // Cascada de spot: Tastytrade (vivo) → Massive → paridad put-call sobre la propia
   // cadena. La paridad es una DERIVACIÓN, no un precio: con el plan gratis de Massive
   // era lo único que quedaba y el 0DTE llevaba días operando así.
@@ -163,6 +184,7 @@ export async function scanZeroDte(
     ticker, expiration, isToday, selectedDte, available, contracts,
     spot,
     spotSource: ttSpot != null ? "tastytrade" : company?.price != null ? "quote" : "paridad",
+    chainSource: chain.source,
     change: company?.change ?? null,
     changePercent: company?.changePercent ?? null,
     minutesLeft, sessionOpen, etMinute,
@@ -170,7 +192,9 @@ export async function scanZeroDte(
     trade, tradeAlt, activeTrade,
     ticket: ticket.ticket,
     ticketNote: ticket.note,
+    spreads: zeroDteSpreads(analysis, activeTrade),
     pinning: pinning(analysis, etMinute, minutesLeft),
+    close: closeForecast({ a: analysis, minutesLeft, isToday }),
     priceOf: (sym) => midBySymbol.get(sym) ?? null,
   };
 }

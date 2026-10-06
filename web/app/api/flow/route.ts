@@ -1,15 +1,16 @@
-// GET /api/flow?ticker=XXX — Reporte de Agresividad (scorecard) desde MarketSnack, por SSE.
+// GET /api/flow?ticker=XXX — Reporte de Agresividad (scorecard) por SSE.
+//
+// FUENTE DEL FLUJO (2026-09-17): cascada Tastytrade → MarketSnack (`lib/flowSources`).
+// Antes era MarketSnack a secas, y por eso esta pantalla —Agresividad, Convicción,
+// Inusualidad y Contexto IV— se caía entera sin su cookie.
 // Lean: filtra duro a transacciones notables, tabla chica + score 0-10. No trae el tape completo.
 
 import { aggressionScore, classifyFlow, convictionScore, unusualityScore, type FlowRow } from "@/lib/flow";
-import { fetchFlow, fetchExpirations, fetchOptionChain2, MarketSnackError } from "@/lib/marketsnack";
-import {
-  normalizeChain2,
-  nearestExpirations,
-  chainIvSurface,
-  type ChainIvSurface,
-} from "@/lib/optionChain2";
-import { saveTrades } from "@/lib/store";
+import { MarketSnackError } from "@/lib/marketsnack";
+import { fetchTickerFlow } from "@/lib/flowSources";
+import { fetchChainsByDate, listExpirations } from "@/lib/frontChain";
+import { nearestExpirations, chainIvSurface, type ChainIvSurface } from "@/lib/optionChain2";
+import { loadTrades, saveTrades } from "@/lib/store";
 import { ivContextScore, type IvContextScore } from "@/lib/ivcontext";
 import { loadIvHistory, saveIvSnapshot } from "@/lib/ivStore";
 import { fetchDailyBars } from "@/lib/massive";
@@ -26,7 +27,8 @@ const TABLE_CAP = 100; // cuántas notables mostrar en la tabla del reporte
 // Convicción revisa una ventana de 30 días (nota del documento) y guarda lo categorizado.
 const CONVICTION_DAYS = 30;
 const CONVICTION_MIN_PREMIUM = 1_000_000;
-const CONVICTION_MAX_PAGES = 15;
+/** Días de la ventana corta del reporte (lo que el streamer sí sirve del tirón). */
+const LEAN_DAYS = 5;
 const CONVICTION_TABLE_CAP = 150;
 
 // Contexto IV: cuántos vencimientos cercanos de la cadena completa se leen para la
@@ -40,13 +42,12 @@ const IV_CHAIN_EXPIRATIONS = 6;
  */
 async function fetchChainIvSurface(ticker: string, now: Date): Promise<ChainIvSurface | null> {
   try {
-    const expirations = await fetchExpirations(ticker);
-    const dates = nearestExpirations(expirations.map((e) => e.date), IV_CHAIN_EXPIRATIONS, now);
+    // Por la cascada Tastytrade → MarketSnack, igual que el 0DTE y el scalping.
+    const { dates: todas } = await listExpirations(ticker);
+    const dates = nearestExpirations(todas, IV_CHAIN_EXPIRATIONS, now);
     if (dates.length === 0) return null;
-    const chains = await Promise.all(
-      dates.map((d) => fetchOptionChain2(ticker, d).then(normalizeChain2).catch(() => [])),
-    );
-    const contracts = chains.flat();
+    const { byDate } = await fetchChainsByDate(ticker, dates);
+    const contracts = [...byDate.values()].flat();
     if (contracts.length === 0) return null;
     return chainIvSurface(contracts, now);
   } catch {
@@ -80,11 +81,11 @@ export async function GET(request: Request) {
     if (!ticker) return Response.json({ error: "ticker requerido" }, { status: 400 });
     const preset = CHART_PRESETS[days] ?? { minPremium: 500_000, maxPages: 20 };
     try {
-      const { trades, truncated } = await fetchFlow(ticker, {
+      const { trades, truncated, source } = await fetchTickerFlow(ticker, {
         period: "1m",
+        days,
         minPremium: preset.minPremium,
         maxPages: preset.maxPages,
-        targetDays: days,
       });
       const { interesting } = classifyFlow(trades, new Date());
       return Response.json({
@@ -92,11 +93,12 @@ export async function GET(request: Request) {
         days,
         minPremium: preset.minPremium,
         rows: interesting.slice(0, 400),
+        source,
         truncated,
       });
     } catch (err) {
       const message =
-        err instanceof MarketSnackError ? err.message : "Error al consultar MarketSnack.";
+        err instanceof MarketSnackError ? err.message : "Error al consultar el flujo.";
       return Response.json({ error: message }, { status: 502 });
     }
   }
@@ -113,15 +115,19 @@ export async function GET(request: Request) {
           return;
         }
 
-        send({ type: "step", label: "Conectando con MarketSnack…" });
+        send({ type: "step", label: "Pidiendo el Time & Sales…" });
         send({ type: "step", label: `Buscando transacciones ≥ $${(MIN_PREMIUM / 1000).toFixed(0)}K de ${ticker}…` });
 
-        const { trades, truncated } = await fetchFlow(ticker, {
+        const { trades, truncated, source } = await fetchTickerFlow(ticker, {
           period,
+          days: LEAN_DAYS,
           minPremium: MIN_PREMIUM,
           maxPages: LEAN_MAX_PAGES,
-          onPage: (page, accumulated) =>
-            send({ type: "step", label: `Revisando flujo — página ${page}`, detail: `${accumulated} notables` }),
+        });
+        send({
+          type: "step",
+          label: source === "tastytrade" ? "Flujo de Tastytrade" : "Flujo de MarketSnack",
+          detail: `${trades.length} transacciones`,
         });
 
         if (trades.length === 0) {
@@ -139,24 +145,38 @@ export async function GET(request: Request) {
 
         // ── Convicción: revisa una ventana de 30 días (nota del documento)
         send({ type: "step", label: `Revisando transacciones de los últimos ${CONVICTION_DAYS} días…` });
-        let convictionRows = interesting;
-        let convictionWindow = period;
-        try {
-          const wide = await fetchFlow(ticker, {
-            period: "1m",
-            minPremium: CONVICTION_MIN_PREMIUM,
-            maxPages: CONVICTION_MAX_PAGES,
-            targetDays: CONVICTION_DAYS,
-            onPage: (page, accumulated) =>
-              send({ type: "step", label: `Revisando 30 días — página ${page}`, detail: `${accumulated} trades` }),
-          });
-          if (wide.trades.length > 0) {
-            convictionRows = classifyFlow(wide.trades, new Date()).interesting;
-            convictionWindow = `${CONVICTION_DAYS}d`;
-          }
-        } catch {
-          // si falla la ventana ancha, Convicción se calcula con los 5 días
+        /**
+         * La ventana de 30 días se ARMA: lo fresco de esta corrida (Tastytrade no
+         * sirve más de ~5 sesiones) más lo que el propio agente lleva guardado de
+         * corridas anteriores, que es justo para lo que existe `saveTrades`. El
+         * dedupe va por `id`, y por eso las impresiones de Tastytrade llevan un id
+         * estable (`printId`) y no un número de orden.
+         *
+         * Con MarketSnack esto era una segunda llamada de 15 páginas; ahora es
+         * gratis, porque los trades grandes ya vienen en la misma bajada.
+         */
+        const desde = Date.now() - CONVICTION_DAYS * 86_400_000;
+        const grandes = new Map<number, FlowRow>();
+        for (const r of (await loadTrades(ticker).catch(() => null))?.trades ?? []) {
+          if (r.premium >= CONVICTION_MIN_PREMIUM && Date.parse(r.timestamp) >= desde) grandes.set(r.id, r);
         }
+        const frescasGrandes = classifyFlow(
+          trades.filter((t) => t.premium >= CONVICTION_MIN_PREMIUM),
+          new Date(),
+        ).interesting;
+        for (const r of frescasGrandes) grandes.set(r.id, r);
+        const acumuladas = [...grandes.values()].sort(
+          (a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp),
+        );
+        // Sin nada acumulado todavía, Convicción se calcula con la ventana corta.
+        const convictionRows = acumuladas.length > 0 ? acumuladas : interesting;
+        const masAntiguo = convictionRows.length
+          ? convictionRows[convictionRows.length - 1].timestamp
+          : null;
+        const diasCubiertos = masAntiguo
+          ? Math.max(1, Math.round((Date.now() - Date.parse(masAntiguo)) / 86_400_000))
+          : 0;
+        const convictionWindow = acumuladas.length > 0 ? `${diasCubiertos}d acumulados` : period;
 
         send({ type: "step", label: "Calculando Score de Convicción (spread · dominancia · ejecución)…" });
         const conviction = convictionScore(convictionRows);
@@ -230,6 +250,7 @@ export async function GET(request: Request) {
           convictionRows: convictionTable,
           convictionMeta: {
             window: convictionWindow,
+            source,
             minPremium: CONVICTION_MIN_PREMIUM,
             total: convictionRows.length,
             shown: convictionTable.length,

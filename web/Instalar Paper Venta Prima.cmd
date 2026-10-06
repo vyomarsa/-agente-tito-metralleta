@@ -44,13 +44,20 @@ if not "%errorlevel%"=="0" goto fallo
 
 echo.
 echo [2/3] Ajustando las tareas (recuperar disparos perdidos y correr con bateria)...
-REM  schtasks no expone estas dos, y las dos importan en una laptop:
-REM   - StartWhenAvailable: si el PC estaba dormido a las 11:45 del lunes, corre al
-REM     despertar. Es seguro porque el motor tiene su propia ventana 10:30-16:00 ET:
-REM     si despierta tarde, bloquea en vez de abrir con precios de mercado cerrado.
+REM  schtasks no expone estas tres, y las tres importan en una laptop:
+REM   - WakeToRun: DESPIERTA el equipo para correr. Sin esto, StartWhenAvailable
+REM     solo recupera el disparo cuando alguien toca la laptop, y eso llega tarde.
+REM     Comprobado el 2026-09-07: el equipo entro en Modern Standby por la manana y
+REM     Prima-Open y Prima-Scan se dispararon las dos juntas a las 16:45 ET, cinco
+REM     horas tarde y ya fuera de ventana. La ventana de apertura es UNA por semana.
+REM     OJO: solo surte efecto si el plan de energia permite temporizadores de
+REM     reactivacion (powercfg SUB_SLEEP RTCWAKE); con bateria suelen venir en 0.
+REM   - StartWhenAvailable: si aun asi se perdio el disparo, corre al despertar. Es
+REM     seguro porque el motor tiene su propia ventana 10:30-12:00 ET: si despierta
+REM     tarde, bloquea en vez de abrir con precios de mercado cerrado.
 REM   - DisallowStartIfOnBatteries: viene en TRUE por defecto, o sea que sin enchufe
 REM     la tarea se saltaba en silencio. Justo el fallo mudo que queremos evitar.
-powershell -NoProfile -Command "foreach ($n in 'TitoMetralleta-Prima-Scan','TitoMetralleta-Prima-Open','TitoMetralleta-Prima-Manage','TitoMetralleta-Prima-Viernes') { $t = Get-ScheduledTask -TaskName $n; $t.Settings.StartWhenAvailable = $true; $t.Settings.DisallowStartIfOnBatteries = $false; $t.Settings.StopIfGoingOnBatteries = $false; Set-ScheduledTask -TaskName $n -Settings $t.Settings | Out-Null }"
+powershell -NoProfile -Command "foreach ($n in 'TitoMetralleta-Prima-Scan','TitoMetralleta-Prima-Open','TitoMetralleta-Prima-Manage','TitoMetralleta-Prima-Viernes') { $t = Get-ScheduledTask -TaskName $n; $t.Settings.WakeToRun = $true; $t.Settings.StartWhenAvailable = $true; $t.Settings.DisallowStartIfOnBatteries = $false; $t.Settings.StopIfGoingOnBatteries = $false; Set-ScheduledTask -TaskName $n -Settings $t.Settings | Out-Null }"
 
 echo.
 echo [3/3] Jubilando las tareas del bot Python...
