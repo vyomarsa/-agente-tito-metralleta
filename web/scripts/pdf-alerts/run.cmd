@@ -11,4 +11,4 @@ set "PATH=C:\Program Files\nodejs;%PATH%"
 cd /d "%~dp0..\.."
 if /i "%1"=="spx" call "node_modules\.bin\tsx.cmd" "scripts\pdf-alerts\poll.ts" SPX
 if /i "%1"=="es" call "node_modules\.bin\tsx.cmd" "scripts\pdf-alerts\poll.ts" /ES
-if /i "%1"=="premarket" node "scripts\pdf-alerts\premarket-scan.mjs"
+if /i "%1"=="premarket" call "node_modules\.bin\tsx.cmd" "scripts\pdf-alerts\premarket-scan.ts"
