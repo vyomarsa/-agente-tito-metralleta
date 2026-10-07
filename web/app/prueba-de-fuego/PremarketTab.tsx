@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ExtendedScan } from "@/lib/pdf/premarketMovers";
+import PremarketAnalysis from "./PremarketAnalysis";
 
 // Pestaña "Pre-market" (pedido del dueño, 2026-10-07): en pantalla, lo mismo que
 // la alerta de Telegram de las 9:15/9:30 ET — las empresas del S&P 500 que más se
@@ -56,10 +57,12 @@ export default function PremarketTab() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <PremarketAnalysis />
+
       <div className="card" style={{ gap: 8 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <div>
-            <div style={{ fontWeight: 700, fontSize: 16 }}>Pre-market · S&amp;P 500</div>
+            <div style={{ fontWeight: 700, fontSize: 16 }}>Movimientos del S&amp;P 500</div>
             <div className="muted" style={{ fontSize: 12, marginTop: 3 }}>
               {data
                 ? <>Fuente <b>{data.source}</b> · {sessionLabel} · {data.moves.length} empresas con dato
