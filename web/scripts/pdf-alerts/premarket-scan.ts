@@ -4,12 +4,13 @@
 // se decide en ET, porque esta PC va en UTC-4 todo el año y Nueva York pasa a
 // UTC-5 en noviembre.
 //
-// Fuente: Tastytrade (oct 2026, antes la cookie de MarketSnack). UNA conexión
-// DXLink para las ~500 empresas: Quote (bid/ask del pre-market, que sí cotiza en
-// las ECN) + Summary (cierre de ayer). OJO: el `Trade` de dxFeed es solo de la
-// sesión regular — antes de la apertura sigue marcando el cierre de ayer — así
-// que el precio de pre-market es el MID de la horquilla, descartando horquillas
-// anchas (> MAX_SPREAD_PCT) que darían movimientos falsos.
+// Fuentes: MarketSnack PRIMERO — su /api/assets ya trae el % de pre-market de las
+// ~500 (medido 2026-10-07 6:13 ET: 498/503). Tastytrade solo de RESPALDO si no
+// hay cookie o venció: medido a la misma hora, sus horquillas de pre-market eran
+// del 3-10% (las 4 movers quedaban fuera, y el mid de PPG daba −2% cuando
+// MarketSnack daba +13%). Tastytrade usa UNA conexión DXLink con Quote + Summary
+// (cierre de ayer); el `Trade` de dxFeed es solo de la sesión regular, así que el
+// precio es el MID, descartando horquillas > MAX_SPREAD_PCT.
 //
 // Uso:
 //   tsx scripts/pdf-alerts/premarket-scan.ts            → solo dentro de su ventana
@@ -114,6 +115,79 @@ function loadState(): { sent: Record<string, boolean> } {
   }
 }
 
+type Company = { ticker: string; name: string };
+type Mover = { ticker: string; name: string; pct: number };
+type Scan = { movers: Mover[]; quoted: number; skipped: number; source: "MarketSnack" | "Tastytrade" };
+
+function loadCookie(): string | null {
+  try {
+    const j = JSON.parse(readFileSync(join(WEB_DIR, "data", "marketsnack-cookie.json"), "utf8"));
+    if (j && typeof j.cookie === "string" && j.cookie.trim()) return j.cookie.trim();
+  } catch {
+    // sin archivo: respaldo .env.local
+  }
+  return process.env.MARKETSNACK_COOKIE?.trim() || null;
+}
+
+/** MarketSnack `/api/assets/{t}`: ya trae el % de la sesión extendida y qué sesión es. */
+async function scanMarketSnack(companies: Company[], cookie: string): Promise<Scan> {
+  log(`Escaneando ${companies.length} tickers del S&P 500 (MarketSnack)…`);
+  let expired = false;
+  let quoted = 0;
+  let skipped = 0;
+  const movers: Mover[] = [];
+  let next = 0;
+  async function worker() {
+    while (next < companies.length && !expired) {
+      const c = companies[next++];
+      try {
+        const res = await fetch(`https://app.marketsnack.com/api/assets/${encodeURIComponent(c.ticker)}`, {
+          headers: { Accept: "application/json", Cookie: cookie },
+          redirect: "manual",
+        });
+        if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) { expired = true; return; }
+        const j = res.ok ? ((await res.json().catch(() => null)) as { extended_price_type?: string; extended_price_change?: { percentage?: number } } | null) : null;
+        const pct = j?.extended_price_type === "Pre-market" ? j.extended_price_change?.percentage : undefined;
+        if (typeof pct !== "number" || !Number.isFinite(pct)) { skipped++; continue; }
+        quoted++;
+        if (Math.abs(pct) >= MOVE_THRESHOLD_PCT) movers.push({ ticker: c.ticker, name: c.name, pct });
+      } catch {
+        skipped++;
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: 10 }, worker));
+  if (expired) throw new Error("sesión de MarketSnack vencida — actualiza la cookie en Ajustes");
+  return { movers, quoted, skipped, source: "MarketSnack" };
+}
+
+/**
+ * Tastytrade: UNA conexión DXLink. Precio de pre-market = MID del bid/ask (el
+ * Trade de dxFeed es solo de la sesión regular), descartando horquillas anchas.
+ */
+async function scanTastytrade(companies: Company[]): Promise<Scan> {
+  const { fetchQuoteToken } = await import("../../lib/tastytrade");
+  const { dxlinkUnderlyings } = await import("../../lib/tastytradeStream");
+  const toStreamer = (t: string) => t.replace(/[.]/g, "/");
+  const byStreamer = new Map(companies.map((c) => [toStreamer(c.ticker), c]));
+  log(`Escaneando ${companies.length} tickers del S&P 500 (Tastytrade)…`);
+  const tok = await fetchQuoteToken();
+  const snap = await dxlinkUnderlyings({ url: tok.url, token: tok.token, symbols: [...byStreamer.keys()], timeoutMs: 30_000, quietMs: 2_000 });
+  let quoted = 0;
+  let skipped = 0;
+  const movers: Mover[] = [];
+  for (const [sym, f] of snap) {
+    const c = byStreamer.get(sym);
+    if (!c || f.bid == null || f.ask == null || !(f.bid > 0) || !(f.ask >= f.bid) || f.prevClose == null) { skipped++; continue; }
+    const mid = (f.bid + f.ask) / 2;
+    if (((f.ask - f.bid) / mid) * 100 > MAX_SPREAD_PCT) { skipped++; continue; }
+    quoted++;
+    const pct = ((mid - f.prevClose) / f.prevClose) * 100;
+    if (Math.abs(pct) >= MOVE_THRESHOLD_PCT) movers.push({ ticker: c.ticker, name: c.name, pct });
+  }
+  return { movers, quoted, skipped, source: "Tastytrade" };
+}
+
 async function main() {
   const now = new Date();
   const et = etNow(now);
@@ -126,42 +200,35 @@ async function main() {
   }
 
   const { SP500 } = await import("../../lib/pdf/sp500");
-  const { fetchQuoteToken } = await import("../../lib/tastytrade");
-  const { dxlinkUnderlyings } = await import("../../lib/tastytradeStream");
 
-  // El streamer usa "BRK/B" para las clases de acción (BRK.B / BRKB → BRK/B).
-  const toStreamer = (t: string) => t.replace(/[.]/g, "/").replace(/^BRKB$/, "BRK/B").replace(/^BFB$/, "BF/B");
-  const byStreamer = new Map(SP500.map((c) => [toStreamer(c.ticker), c]));
-
-  log(`Escaneando ${SP500.length} tickers del S&P 500 (Tastytrade)…`);
-  let snap;
-  try {
-    const tok = await fetchQuoteToken();
-    snap = await dxlinkUnderlyings({ url: tok.url, token: tok.token, symbols: [...byStreamer.keys()], timeoutMs: 30_000, quietMs: 2_000 });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log(`ERROR de Tastytrade — ${msg}`);
-    await sendTelegram(`⚠ No pude revisar el pre-market: Tastytrade no respondió (${msg.slice(0, 120)}).`).catch(() => {});
-    return;
+  // FUENTE PRIMARIA = MarketSnack (cubre las ~500 aunque coticen con horquilla
+  // ancha); si no hay cookie o venció, RESPALDO automático = Tastytrade.
+  let scan: Scan | null = null;
+  const cookie = loadCookie();
+  if (cookie) {
+    scan = await scanMarketSnack(SP500, cookie).catch((err) => {
+      log(`MarketSnack no sirvió (${err instanceof Error ? err.message : String(err)}) — paso a Tastytrade.`);
+      return null;
+    });
+  } else {
+    log("Sin cookie de MarketSnack — uso Tastytrade.");
   }
-
-  let quoted = 0;
-  let wide = 0;
-  const movers: { ticker: string; name: string; pct: number }[] = [];
-  for (const [sym, f] of snap) {
-    const c = byStreamer.get(sym);
-    if (!c || f.bid == null || f.ask == null || !(f.bid > 0) || !(f.ask >= f.bid) || f.prevClose == null) continue;
-    const mid = (f.bid + f.ask) / 2;
-    if (((f.ask - f.bid) / mid) * 100 > MAX_SPREAD_PCT) { wide++; continue; }
-    quoted++;
-    const pct = ((mid - f.prevClose) / f.prevClose) * 100;
-    if (Math.abs(pct) >= MOVE_THRESHOLD_PCT) movers.push({ ticker: c.ticker, name: c.name, pct });
+  if (!scan || scan.quoted === 0) {
+    try {
+      scan = await scanTastytrade(SP500);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`ERROR de Tastytrade — ${msg}`);
+      await sendTelegram(`⚠ No pude revisar el pre-market: ni MarketSnack ni Tastytrade respondieron (${msg.slice(0, 120)}).`).catch(() => {});
+      return;
+    }
   }
+  const { movers, quoted, source } = scan;
   movers.sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct));
-  log(`Listo — ${quoted} con cotización usable, ${wide} con horquilla ancha (ignorados), ${movers.length} movimiento(s) ≥${MOVE_THRESHOLD_PCT}%.`);
+  log(`Listo (${source}) — ${quoted} con dato de pre-market, ${scan.skipped} sin dato/ignorados, ${movers.length} movimiento(s) ≥${MOVE_THRESHOLD_PCT}%.`);
 
   if (quoted === 0) {
-    await sendTelegram("⚠ No pude revisar el pre-market: Tastytrade no devolvió cotizaciones usables.").catch(() => {});
+    await sendTelegram("⚠ No pude revisar el pre-market: ninguna fuente devolvió datos usables.").catch(() => {});
     return;
   }
 
