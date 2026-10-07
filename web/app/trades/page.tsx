@@ -70,29 +70,31 @@ const EMPTY_FORM = {
   trailing: true,
 };
 
-// Pestañas de "Mis Trades". Las dos primeras filtran la bitácora propia de Tito por
-// la NOTA del trade (que es lo que escribe el piloto: "Swing").
+// Pestañas de "Mis Trades". "Todos" es la bitácora propia de Tito.
+//
+// "Swing" (filtraba la bitácora por la nota "Swing") se sustituyó el 2026-10-07, a
+// pedido del dueño, por "Agente Prueba de Fuego": la cuenta simulada de ese agente
+// (lib/pdf/agentPaper.ts). Los trades con nota "Swing" siguen en "Todos".
 //
 // La pestaña "Day" se retiró el 2026-08-24 porque no hay agente de day trading todavía:
 // filtraba por la nota "Day Trading", que ya nadie escribe, y salía siempre vacía. Los
 // trades intradía que existan siguen en "Todos". Cómo devolverla: `_archivado/pestana-day`.
 //
-// "0DTE" y "Venta Prima" son distintas: no son trades del piloto, sino las cuentas
-// simuladas de esos dos agentes, cada una con su capital — Tito solo las MUESTRA.
-type TabId = "todos" | "swing" | "cero" | "prima";
+// "Agente Prueba de Fuego", "0DTE" y "Venta Prima" son distintas: no son trades del
+// piloto, sino las cuentas simuladas de esos agentes, cada una con su capital — Tito
+// solo las MUESTRA.
+type TabId = "todos" | "pdf" | "cero" | "prima";
 
 const TABS: { id: TabId; label: string; hint: string }[] = [
   { id: "todos", label: "Todos", hint: "Toda la bitácora de Tito" },
-  { id: "swing", label: "Swing", hint: "Setups de varios días" },
+  { id: "pdf", label: "Agente Prueba de Fuego", hint: "Simulador del agente de Prueba de Fuego (0DTE de SPY, cuenta propia)" },
   { id: "cero", label: "0DTE", hint: "Simulador del agente 0DTE (cuenta propia)" },
   { id: "prima", label: "Venta Prima", hint: "Simulador del bot de credit spreads (proyecto aparte)" },
 ];
 
-/** Filtra por la nota del trade. "Todos" no filtra; 0DTE y Venta Prima tienen
- *  cuenta propia y no pasan por aquí. */
-function matchesTab(t: PaperTrade, tab: TabId): boolean {
-  const nota = (t.note ?? "").toLowerCase();
-  if (tab === "swing") return nota.includes("swing");
+/** "Todos" no filtra; las cuentas de los agentes (Prueba de Fuego, 0DTE y Venta
+ *  Prima) tienen su propio panel y no pasan por aquí. */
+function matchesTab(_t: PaperTrade, _tab: TabId): boolean {
   return true;
 }
 
@@ -127,6 +129,7 @@ export default function TradesPage() {
   const [tab, setTab] = useState<TabId>("todos");
   const [vp, setVp] = useState<VpResponse | null>(null);
   const [zp, setZp] = useState<ZpResponse | null>(null);
+  const [pf, setPf] = useState<ZpResponse | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -236,6 +239,16 @@ export default function TradesPage() {
       .catch(() => setZp({ error: "sin conexión" }));
   }, [tab, zp]);
 
+  // Cuenta paper del Agente Prueba de Fuego. Solo lectura: abre y cierra
+  // scripts/pdf-alerts/paper-tick.ts cada minuto de sesión.
+  useEffect(() => {
+    if (tab !== "pdf" || pf) return;
+    void fetch("/api/pdf/agente-paper", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d: ZpResponse) => setPf(d))
+      .catch(() => setPf({ error: "sin conexión" }));
+  }, [tab, pf]);
+
   const create = async () => {
     const d = await post({ action: "create", ...form });
     if (d) {
@@ -290,7 +303,7 @@ export default function TradesPage() {
       {/* Stats de la bitácora de Tito. En la pestaña de Venta Prima se ocultan: esos
           números son de OTRA estrategia y verlos juntos se lee como si fueran la misma
           cuenta (salían "38/22 pendientes" al lado del capital del bot). */}
-      {tab !== "prima" && tab !== "cero" && (
+      {tab !== "prima" && tab !== "cero" && tab !== "pdf" && (
       <div className="pt-stats">
         {/* El P&L solo suma los cierres CON los dos precios. Los que se cerraron sin
             prima de salida cuentan para el acierto pero no para el dinero, y eso se
@@ -392,6 +405,8 @@ export default function TradesPage() {
         <VentaPrimaPanel vp={vp} />
       ) : tab === "cero" ? (
         <ZeroDtePanel zp={zp} />
+      ) : tab === "pdf" ? (
+        <ZeroDtePanel zp={pf} variant="pdf" />
       ) : (
         <div className="pt-list">
           {visibles.length === 0 && (
@@ -886,10 +901,12 @@ const hhmm = (iso: string | null) => {
  * Es SOLO LECTURA. Quien abre y cierra es el tick de `/api/0dte-paper`, cada
  * minuto de sesión, con o sin la página delante.
  */
-function ZeroDtePanel({ zp }: { zp: ZpResponse | null }) {
-  if (!zp) return <div className="pt-empty">Cargando la cuenta del 0DTE…</div>;
+function ZeroDtePanel({ zp, variant = "tito" }: { zp: ZpResponse | null; variant?: "tito" | "pdf" }) {
+  const pdf = variant === "pdf";
+  const nombre = pdf ? "del Agente Prueba de Fuego" : "del 0DTE";
+  if (!zp) return <div className="pt-empty">Cargando la cuenta {nombre}…</div>;
   if (zp.error || !zp.summary) {
-    return <div className="pt-box bad">No se pudo leer la cuenta de paper del 0DTE.</div>;
+    return <div className="pt-box bad">No se pudo leer la cuenta de paper {nombre}.</div>;
   }
   const s = zp.summary;
   const abiertas = zp.open ?? [];
@@ -937,8 +954,18 @@ function ZeroDtePanel({ zp }: { zp: ZpResponse | null }) {
       </div>
 
       <div className="vp-note">
-        🎯 <b>0DTE en paper.</b> Compra el contrato del <b>GEX Ticket</b> al mid cuando el agente
-        tiene señal viva, arriesgando el 2% del capital. Cierra al objetivo o al stop del
+        {pdf ? (
+          <>
+            🔥 <b>Agente Prueba de Fuego en paper (0DTE de SPY).</b> Compra el contrato del{" "}
+            <b>GEX Ticket</b> de Prueba de Fuego al mid cuando su <b>GEX Trade</b> (vuelta al imán en γ+)
+            tiene señal, arriesgando el 2% del capital. Mismas reglas que la cuenta 0DTE de Tito, libro aparte.
+          </>
+        ) : (
+          <>
+            🎯 <b>0DTE en paper.</b> Compra el contrato del <b>GEX Ticket</b> al mid cuando el agente
+            tiene señal viva, arriesgando el 2% del capital.
+          </>
+        )} Cierra al objetivo o al stop del
         subyacente, <b>asegura el {Math.round((1 - TRAIL_DEVOLUCION_PCT) * 100)}% de la ganancia</b> si una posición que llegó a +{Math.round(TRAIL_ARMA_PCT * 100)}% empieza a devolverla, y{" "}
         <b>cierra por reloj a las 15:30 ET</b> lo que siga vivo — un 0DTE que llega a la campana sin
         estar ITM vale cero. El tick corre cada minuto
