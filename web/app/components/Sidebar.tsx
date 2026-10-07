@@ -15,6 +15,7 @@ const NAV: { href: string; label: string; icon: string; hint: string }[] = [
   { href: "/trades", label: "Mis Trades", icon: "📓", hint: "Paper trading (simulación)" },
   { href: "/spreads", label: "Venta Prima", icon: "✂️", hint: "Credit spreads 4–7 DTE (venta de prima)" },
   { href: "/0dte", label: "0DTE", icon: "🎯", hint: "Cadena del día (cero DTE)" },
+  { href: "/premarket", label: "Pre-market", icon: "☀️", hint: "S&P 500 que se mueve en pre-market / after-hours" },
   { href: "/prueba-de-fuego", label: "Prueba de Fuego", icon: "🔥", hint: "Visionary Trades — 0DTE, contratos, grandes empresas, BTC" },
   { href: "/scalping", label: "Scalping", icon: "📐", hint: "Playbook del Rango — fase 1: observar los niveles" },
   { href: "/flow", label: "Time & Sales", icon: "⚡", hint: "Agresividad en vivo" },
