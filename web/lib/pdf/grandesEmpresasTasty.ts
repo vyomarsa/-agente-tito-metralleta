@@ -20,6 +20,7 @@ import {
 } from "@/lib/tastytrade";
 import { sideOf } from "@/lib/flowSources";
 import { summarizeActivity, type ActivitySummary, type TradeSummaryBucketLike } from "./contratosVecinos3";
+import { fetchContractActivitySummariesGrouped, MarketSnackError } from "./marketsnack";
 import { etTimeToUnix, marketDateStr } from "./occ";
 import { toRow } from "./odteStandalone/compute";
 import { zeroDteGex } from "./odteStandalone/zerodte";
@@ -137,6 +138,34 @@ export async function fetchActivityGroupedTasty(
     out.set(key, summarizeActivity([...merged.values()]));
   }
   return out;
+}
+
+/**
+ * Actividad por grupo con cascada MarketSnack → Tastytrade.
+ *
+ * MarketSnack PRIMERO: sus trade_summaries cubren el día entero. Medido el
+ * 2026-10-07 sobre la sesión del 6-oct: en los strikes activos el Time & Sales
+ * de Tastytrade (tope ~1.000 impresiones por contrato) solo alcanzaba la ÚLTIMA
+ * hora — Premium Traded 8-50× por debajo (AAPL 332.5P: $790k vs $6.58M) y el
+ * neto del día llegó a salir con el signo invertido (NVDA 242.5C). Tastytrade
+ * queda de respaldo si no hay cookie o venció.
+ */
+export async function fetchActivityGrouped(
+  occGroups: Map<string, string[]>,
+  contracts: NearContract[],
+  token: QuoteToken,
+  now: Date = new Date(),
+): Promise<{ activity: Map<string, ActivitySummary>; source: "MarketSnack" | "Tastytrade" }> {
+  try {
+    return { activity: await fetchContractActivitySummariesGrouped(occGroups), source: "MarketSnack" };
+  } catch (err) {
+    if (!(err instanceof MarketSnackError)) throw err;
+  }
+  const streamerOf = new Map(contracts.map((c) => [c.optionTicker, c.streamer]));
+  const streamerGroups = new Map(
+    [...occGroups].map(([k, occs]) => [k, occs.map((o) => streamerOf.get(o)).filter((x): x is string => !!x)]),
+  );
+  return { activity: await fetchActivityGroupedTasty(streamerGroups, token, now), source: "Tastytrade" };
 }
 
 /** Niveles GEX del estilo de MarketSnack (imán, muros, flip) sobre los vencimientos dados. */

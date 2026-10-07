@@ -20,7 +20,7 @@
 // superior sigue siendo el en vivo de MarketSnack (para pre-market/order
 // book), pueden no coincidir al centavo.
 
-import { fetchActivityGroupedTasty, fetchCompanyBase } from "@/lib/pdf/grandesEmpresasTasty";
+import { fetchActivityGrouped, fetchCompanyBase } from "@/lib/pdf/grandesEmpresasTasty";
 import { isMarketOpen, isPreMarket, filterPremarketBars } from "@/lib/pdf/marketHours";
 import { etTimeToUnix, marketDateStr } from "@/lib/pdf/occ";
 import { findPivots, clusterPivots } from "@/lib/pdf/levels";
@@ -67,6 +67,7 @@ export async function GET(request: Request) {
     const allExpirations = [...new Set(chain.contracts.map((c) => c.expiration))];
     const nearExpirations = selectWeeklyExpirations(allExpirations, now);
 
+    let activitySource: "MarketSnack" | "Tastytrade" | null = null;
     let aboveLevels: ActivityLevel[] = [];
     let belowLevels: ActivityLevel[] = [];
     if (nearExpirations.length > 0) {
@@ -94,11 +95,11 @@ export async function GET(request: Request) {
         if (cs.length > 0) activityGroups.set(`${s}|call`, cs);
         if (ps.length > 0) activityGroups.set(`${s}|put`, ps);
       }
-      const streamerOf = new Map(chain.contracts.map((c) => [c.optionTicker, c.streamer]));
-      const streamerGroups = new Map(
-        [...activityGroups].map(([k, occs]) => [k, occs.map((o) => streamerOf.get(o)).filter((x): x is string => !!x)]),
+      // Net premium por contrato: MarketSnack (día entero) o, si la cookie falla, Tastytrade.
+      const { activity: activityByKey, source } = await fetchActivityGrouped(
+        activityGroups, chain.contracts, base.token, now,
       );
-      const activityByKey = await fetchActivityGroupedTasty(streamerGroups, base.token, now);
+      activitySource = source;
       aboveLevels = above
         .map((strike): ActivityLevel | null => {
           const activity = activityByKey.get(`${strike}|call`);
@@ -176,6 +177,7 @@ export async function GET(request: Request) {
       above: aboveLevels,
       below: belowLevels,
       orderBook,
+      activitySource,
       gex: "error" in gex ? null : gex,
       gexError: "error" in gex ? gex.error : null,
     });

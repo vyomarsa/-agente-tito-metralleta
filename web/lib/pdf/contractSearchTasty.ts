@@ -1,8 +1,9 @@
 // ============================================================================
-// Flujo de "Búsqueda de contratos" desde Tastytrade (oct 2026, pedido del dueño:
-// "usar solo Tasty"). MarketSnack daba el flujo de TODO el mercado; Tastytrade
-// no tiene ese feed, así que se escanea una lista FIJA elegida por el dueño:
-// las 14 de "Grandes empresas" + SPY y QQQ.
+// Flujo de "Búsqueda de contratos" desde Tastytrade. Tastytrade no tiene feed de
+// todo el mercado, así que se escanea una lista FIJA elegida por el dueño: las 14
+// de "Grandes empresas" + SPY y QQQ. La ruta lo UNE con el flujo de MarketSnack
+// (sin duplicados), porque ninguna fuente cubre el día entero sola: aquí dxFeed
+// da como mucho ~1.000 impresiones por contrato (las más recientes).
 //
 // Por ticker, para no bajar el Time & Sales de miles de contratos:
 //   1. snapshot de la cadena 10-40 DTE (OI y volumen del día por contrato)

@@ -26,7 +26,7 @@
 //     para 13 tickers a la vez).
 
 import { TastytradeError as TitoTastytradeError } from "@/lib/tastytrade";
-import { fetchActivityGroupedTasty, fetchCompanyBase, gexLevels } from "@/lib/pdf/grandesEmpresasTasty";
+import { fetchActivityGrouped, fetchCompanyBase, gexLevels } from "@/lib/pdf/grandesEmpresasTasty";
 import { isMarketOpen, isPreMarket, filterPremarketBars } from "@/lib/pdf/marketHours";
 import { etTimeToUnix, hoursToExpirationClose, marketDateStr } from "@/lib/pdf/occ";
 import { findPivots, clusterPivots } from "@/lib/pdf/levels";
@@ -115,13 +115,10 @@ export async function GET(request: Request) {
       if (cs.length > 0) activityGroups.set(`${s}|call`, cs);
       if (ps.length > 0) activityGroups.set(`${s}|put`, ps);
     }
-    // Net premium por contrato desde el Time & Sales de Tastytrade. Los grupos se
-    // arman con OCC; aquí se traducen al símbolo del streamer.
-    const streamerOf = new Map(chain.contracts.map((c) => [c.optionTicker, c.streamer]));
-    const streamerGroups = new Map(
-      [...activityGroups].map(([k, occs]) => [k, occs.map((o) => streamerOf.get(o)).filter((x): x is string => !!x)]),
+    // Net premium por contrato: MarketSnack (día entero) o, si la cookie falla, Tastytrade.
+    const { activity: activityByKey, source: activitySource } = await fetchActivityGrouped(
+      activityGroups, chain.contracts, base.token, now,
     );
-    const activityByKey = await fetchActivityGroupedTasty(streamerGroups, base.token, now);
 
     const aboveLevels: ActivityLevel[] = above
       .map((strike): ActivityLevel | null => {
@@ -296,6 +293,7 @@ export async function GET(request: Request) {
       below: belowLevels,
       signal,
       orderBook,
+      activitySource,
       suggestions,
     });
   } catch (err) {

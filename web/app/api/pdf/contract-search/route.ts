@@ -38,9 +38,9 @@ const MIN_PREMIUM = 1_000_001; // > $1,000,000 (el filtro de MarketSnack es "gte
  *  cubren ~media sesión (medido 2026-10-06: de 12:11 ET al cierre). */
 const MS_MAX_PAGES = 30;
 
-/** Tickers fijos que escanea Tastytrade (día COMPLETO) — de MarketSnack se toma el resto. */
+/** Tickers fijos que escanea Tastytrade. */
 const TT_UNIVERSE = new Set(CONTRACT_SEARCH_UNIVERSE);
-/** Lo que aporta MarketSnack: el resto del S&P 500 (+ SPY/QQQ si Tastytrade falla). */
+/** Universo de MarketSnack: S&P 500 + SPY/QQQ. */
 const MS_UNIVERSE = new Set([...SP500_TICKERS, "SPY", "QQQ"]);
 
 /** Nombre para mostrar: S&P 500 (lib/sp500.json) o los ETF del universo. */
@@ -65,11 +65,14 @@ export async function GET() {
       try {
         // DOS fuentes en paralelo y se combinan:
         //  · Tastytrade: los 16 tickers fijos del dueño (14 de Grandes empresas +
-        //    SPY/QQQ), con el Time & Sales del día COMPLETO.
-        //  · MarketSnack: flujo de TODO el mercado, para el resto del S&P 500. Solo
-        //    alcanza ~media sesión (pagina hacia atrás) y se descartan sus trades de
-        //    los 16 tickers para no contar dos veces la misma operación.
-        // Si una de las dos falla, se sigue con la otra.
+        //    SPY/QQQ). Su Time & Sales trae como mucho ~1.000 impresiones por
+        //    contrato (las más recientes): en contratos activos solo cubre el final
+        //    del día (medido 2026-10-07: la última hora en strikes ATM).
+        //  · MarketSnack: flujo de TODO el mercado (S&P 500 + SPY/QQQ). Pagina de lo
+        //    más reciente hacia atrás: 30 páginas ≈ media sesión.
+        // Ninguna cubre el día entero sola, así que se UNEN y se quitan los
+        // duplicados (mismo contrato, segundo, precio y tamaño). Si una falla, sigue
+        // con la otra.
         send({ type: "step", label: "Escaneando Tastytrade (16 tickers) y MarketSnack (todo el mercado) en paralelo…" });
         const [tt, ms] = await Promise.all([
           fetchUniverseFlow({
@@ -103,17 +106,20 @@ export async function GET() {
         const msTrades: RawTrade[] = msOk ? (ms as Exclude<typeof ms, Error>).trades.filter((t) => Date.parse(t.timestamp) >= sinceMs) : [];
         const ttTrades: RawTrade[] = ttOk ? (tt as Exclude<typeof tt, Error>).trades : [];
         const spots = ttOk ? (tt as Exclude<typeof tt, Error>).spots : new Map<string, number>();
-        const trades = [...ttTrades, ...msTrades];
+        const seen = new Set<string>();
+        const trades = [...ttTrades, ...msTrades].filter((t) => {
+          const key = `${t.symbol}|${Math.floor(Date.parse(t.timestamp) / 1000)}|${t.price}|${t.size}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
         const pages = (msOk ? (ms as Exclude<typeof ms, Error>).pages : 0) + (ttOk ? CONTRACT_SEARCH_UNIVERSE.length : 0);
         const truncated = (msOk && (ms as Exclude<typeof ms, Error>).truncated) || (ttOk && (tt as Exclude<typeof tt, Error>).truncated > 0);
 
-        send({ type: "step", label: `Clasificando ${ttTrades.length} operaciones de Tastytrade + ${msTrades.length} de MarketSnack…` });
-        // Se clasifica cada fuente por separado (repetición/simultaneidad son por fuente).
-        const ttRows = classifyFlow(ttTrades, now).rows;
-        const msRows = classifyFlow(msTrades, now).rows.filter(
-          (r) => MS_UNIVERSE.has(r.underlying) && (!ttOk || !TT_UNIVERSE.has(r.underlying)),
+        send({ type: "step", label: `Clasificando ${trades.length} operaciones (${ttTrades.length} de Tastytrade + ${msTrades.length} de MarketSnack, sin duplicados)…` });
+        const todaysRows = classifyFlow(trades, now).rows.filter(
+          (r) => MS_UNIVERSE.has(r.underlying) || TT_UNIVERSE.has(r.underlying),
         );
-        const todaysRows = [...ttRows, ...msRows];
 
         send({ type: "step", label: "Aplicando el criterio de acumulación…" });
         const universeRows = dedupeByContract(todaysRows);
