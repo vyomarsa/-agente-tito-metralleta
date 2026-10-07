@@ -13,18 +13,19 @@ import GrandesEmpresasTab from "./GrandesEmpresasTab";
 import GrandesEmpresas2Tab from "./GrandesEmpresas2Tab";
 import OdteStandaloneTab from "./OdteStandaloneTab";
 import BtcTab from "./BtcTab";
+import PremarketTab from "./PremarketTab";
 import { migrateLegacyKey } from "@/lib/pdf/legacyStorage";
 
 const KEY_TAB = "visionary.pruebaDeFuego.tab";
 
-type Tab = "TSLA" | "SPX" | "SPX_VECINOS" | "SPX_0DTE" | "VECINOS_2" | "VECINOS_3" | "buscar" | "GRANDES" | "ODTE_STANDALONE" | "GRANDES_2" | "BTC";
+type Tab = "TSLA" | "SPX" | "SPX_VECINOS" | "SPX_0DTE" | "VECINOS_2" | "VECINOS_3" | "buscar" | "GRANDES" | "ODTE_STANDALONE" | "GRANDES_2" | "BTC" | "PREMARKET";
 
 // TSLA/SPX/SPX_VECINOS/SPX_0DTE/VECINOS_2/VECINOS_3: pedido explícito (ago 2026) —
 // sacadas de la navegación visible, NO borradas. El componente, la ruta y el
 // `case` de render siguen intactos más abajo a propósito, por si hace falta
 // traerlas de vuelta: para eso alcanza con volver a agregar el `<button>`
 // correspondiente al array de abajo.
-const VISIBLE_TABS: Tab[] = ["ODTE_STANDALONE", "buscar", "GRANDES", "GRANDES_2", "BTC"];
+const VISIBLE_TABS: Tab[] = ["PREMARKET", "ODTE_STANDALONE", "buscar", "GRANDES", "GRANDES_2", "BTC"];
 const DEFAULT_TAB: Tab = "GRANDES";
 
 export default function PruebaDeFuegoPage() {
@@ -53,6 +54,9 @@ export default function PruebaDeFuegoPage() {
       <div className="ideas-body">
         <div className="view-toggle-row">
           <div className="view-toggle">
+            <button className={tab === "PREMARKET" ? "active" : ""} onClick={() => pickTab("PREMARKET")}>
+              Pre-market
+            </button>
             <button className={tab === "ODTE_STANDALONE" ? "active" : ""} onClick={() => pickTab("ODTE_STANDALONE")}>
               0DTE
             </button>
@@ -82,6 +86,7 @@ export default function PruebaDeFuegoPage() {
         {tab === "GRANDES" && <GrandesEmpresasTab />}
         {tab === "GRANDES_2" && <GrandesEmpresas2Tab />}
         {tab === "BTC" && <BtcTab />}
+        {tab === "PREMARKET" && <PremarketTab />}
       </div>
     </main>
   );
