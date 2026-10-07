@@ -21,16 +21,27 @@ import {
   MIN_CONVICTION_PCT,
 } from "@/lib/pdf/contractSearch";
 import { rankUnusualSwing } from "@/lib/pdf/unusualSwing";
-import { SP500 } from "@/lib/pdf/sp500";
+import { SP500, SP500_TICKERS } from "@/lib/pdf/sp500";
 import { CONTRACT_SEARCH_UNIVERSE, fetchUniverseFlow } from "@/lib/pdf/contractSearchTasty";
-import { TastytradeError } from "@/lib/tastytrade";
+import { fetchMarketFlow, MarketSnackError } from "@/lib/pdf/marketsnack";
+import { marketDateStr } from "@/lib/pdf/occ";
+import { fetchTastytradeQuotes, TastytradeError } from "@/lib/tastytrade";
+import type { RawTrade } from "@/lib/pdf/flow";
 import { buildNewsReport, contradictionFlag, type ContradictionFlag } from "@/lib/pdf/news";
 import type { ContractSearchSseEvent, FavoriteContract } from "@/app/prueba-de-fuego/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const MIN_PREMIUM = 1_000_001; // > $1,000,000
+const MIN_PREMIUM = 1_000_001; // > $1,000,000 (el filtro de MarketSnack es "gte")
+/** MarketSnack pagina de lo más reciente hacia atrás (50 por página): 30 páginas
+ *  cubren ~media sesión (medido 2026-10-06: de 12:11 ET al cierre). */
+const MS_MAX_PAGES = 30;
+
+/** Tickers fijos que escanea Tastytrade (día COMPLETO) — de MarketSnack se toma el resto. */
+const TT_UNIVERSE = new Set(CONTRACT_SEARCH_UNIVERSE);
+/** Lo que aporta MarketSnack: el resto del S&P 500 (+ SPY/QQQ si Tastytrade falla). */
+const MS_UNIVERSE = new Set([...SP500_TICKERS, "SPY", "QQQ"]);
 
 /** Nombre para mostrar: S&P 500 (lib/sp500.json) o los ETF del universo. */
 const NAMES = new Map<string, string>([
@@ -52,23 +63,57 @@ export async function GET() {
       const send = (e: ContractSearchSseEvent) => controller.enqueue(encoder.encode(sse(e)));
 
       try {
-        // Flujo desde Tastytrade (oct 2026, antes MarketSnack con todo el mercado):
-        // Tastytrade no tiene feed de todo el mercado, así que se escanea la lista
-        // fija del dueño (14 de Grandes empresas + SPY y QQQ), solo el día de HOY.
-        const { trades, spots, failed, truncated } = await fetchUniverseFlow({
-          minPremium: MIN_PREMIUM,
-          now,
-          onTicker: (ticker, i, total, found) => {
-            send({ type: "step", label: `Escaneando ${ticker} (${i}/${total}) — ${found} operaciones grandes` });
-          },
-        });
-        if (trades.length === 0 && failed.length === CONTRACT_SEARCH_UNIVERSE.length) {
-          throw new TastytradeError("Tastytrade no respondió para ningún ticker del universo.");
+        // DOS fuentes en paralelo y se combinan:
+        //  · Tastytrade: los 16 tickers fijos del dueño (14 de Grandes empresas +
+        //    SPY/QQQ), con el Time & Sales del día COMPLETO.
+        //  · MarketSnack: flujo de TODO el mercado, para el resto del S&P 500. Solo
+        //    alcanza ~media sesión (pagina hacia atrás) y se descartan sus trades de
+        //    los 16 tickers para no contar dos veces la misma operación.
+        // Si una de las dos falla, se sigue con la otra.
+        send({ type: "step", label: "Escaneando Tastytrade (16 tickers) y MarketSnack (todo el mercado) en paralelo…" });
+        const [tt, ms] = await Promise.all([
+          fetchUniverseFlow({
+            minPremium: MIN_PREMIUM,
+            now,
+            onTicker: (ticker, i, total, found) => {
+              send({ type: "step", label: `Tastytrade: ${ticker} (${i}/${total}) — ${found} operaciones grandes` });
+            },
+          }).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
+          fetchMarketFlow({
+            period: "1d",
+            minPremium: MIN_PREMIUM,
+            maxPages: MS_MAX_PAGES,
+            onPage: (page, accumulated) => {
+              send({ type: "step", label: `MarketSnack: página ${page} — ${accumulated} operaciones grandes` });
+            },
+          }).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
+        ]);
+        const ttOk = !(tt instanceof Error) && tt.failed.length < CONTRACT_SEARCH_UNIVERSE.length;
+        const msOk = !(ms instanceof Error);
+        if (!ttOk && !msOk) {
+          throw new TastytradeError(
+            `Ni Tastytrade ni MarketSnack respondieron (${(ms as Error).message}).`,
+          );
         }
+        if (!msOk) send({ type: "step", label: `MarketSnack no disponible (${(ms as Error).message}) — sigo solo con Tastytrade.` });
+        if (!ttOk) send({ type: "step", label: "Tastytrade no respondió — sigo solo con MarketSnack." });
 
-        send({ type: "step", label: `Clasificando ${trades.length} operaciones…` });
-        const { rows } = classifyFlow(trades, now);
-        const todaysRows = rows;
+        // period="1d" de MarketSnack es una ventana rolling: antes de la apertura trae trades de ayer.
+        const sinceMs = Date.parse(`${marketDateStr(now)}T00:00:00Z`);
+        const msTrades: RawTrade[] = msOk ? (ms as Exclude<typeof ms, Error>).trades.filter((t) => Date.parse(t.timestamp) >= sinceMs) : [];
+        const ttTrades: RawTrade[] = ttOk ? (tt as Exclude<typeof tt, Error>).trades : [];
+        const spots = ttOk ? (tt as Exclude<typeof tt, Error>).spots : new Map<string, number>();
+        const trades = [...ttTrades, ...msTrades];
+        const pages = (msOk ? (ms as Exclude<typeof ms, Error>).pages : 0) + (ttOk ? CONTRACT_SEARCH_UNIVERSE.length : 0);
+        const truncated = (msOk && (ms as Exclude<typeof ms, Error>).truncated) || (ttOk && (tt as Exclude<typeof tt, Error>).truncated > 0);
+
+        send({ type: "step", label: `Clasificando ${ttTrades.length} operaciones de Tastytrade + ${msTrades.length} de MarketSnack…` });
+        // Se clasifica cada fuente por separado (repetición/simultaneidad son por fuente).
+        const ttRows = classifyFlow(ttTrades, now).rows;
+        const msRows = classifyFlow(msTrades, now).rows.filter(
+          (r) => MS_UNIVERSE.has(r.underlying) && (!ttOk || !TT_UNIVERSE.has(r.underlying)),
+        );
+        const todaysRows = [...ttRows, ...msRows];
 
         send({ type: "step", label: "Aplicando el criterio de acumulación…" });
         const universeRows = dedupeByContract(todaysRows);
@@ -87,7 +132,14 @@ export async function GET() {
         send({ type: "step", label: "Ordenando por acumulación (volumen sobre Open Interest)…" });
         const top = rankUnusualSwing(tradeable).slice(0, FAVORITES_COUNT);
 
-        // Precio en vivo (mid del streamer, ya pedido en el escaneo) y nombre.
+        // Precio en vivo: los 16 de Tastytrade ya lo traen del escaneo; para los
+        // finalistas que vinieron de MarketSnack se pide aquí al streamer.
+        const finalists = [...new Set(top.map((r) => r.underlying))];
+        const missing = finalists.filter((t) => !spots.has(t));
+        if (missing.length > 0) {
+          const q = await fetchTastytradeQuotes(missing).catch(() => new Map());
+          for (const [t, v] of q) if (v.price != null) spots.set(t, v.price);
+        }
         const companies = new Map<string, { price: number | null; name: string | null }>(
           [...new Set(top.map((r) => r.underlying))].map((t) => [t, { price: spots.get(t) ?? null, name: NAMES.get(t) ?? null }]),
         );
@@ -133,10 +185,10 @@ export async function GET() {
           };
         });
 
-        send({ type: "done", favorites, meta: { scanned: trades.length, pages: CONTRACT_SEARCH_UNIVERSE.length - failed.length, truncated: truncated > 0 } });
+        send({ type: "done", favorites, meta: { scanned: trades.length, pages, truncated } });
       } catch (err) {
         const message =
-          err instanceof TastytradeError
+          err instanceof TastytradeError || err instanceof MarketSnackError
             ? err.message
             : "Error inesperado al buscar contratos.";
         send({ type: "error", message });
